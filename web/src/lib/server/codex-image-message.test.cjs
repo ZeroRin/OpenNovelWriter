@@ -7,7 +7,7 @@ const { createJiti } = require('jiti')
 const src = path.resolve(__dirname, '../..')
 const jiti = createJiti(__filename, { alias: { '@': src } })
 
-function fixture(composerMode = 'default') {
+function fixture(composerMode = 'default', workspace = '/unused') {
     const now = new Date()
     let row = { id: 'session', ownerId: 'owner', novelId: 'novel', category: 'general', status: 'idle', composerMode, messagesJson: '[]', draftAttachmentsJson: '[]', draftArtifactsJson: '[]', createdAt: now, updatedAt: now }
     const calls = []
@@ -18,19 +18,19 @@ function fixture(composerMode = 'default') {
             updateMany: async ({ data }) => { row = { ...row, ...data }; return { count: 1 } },
             update: async ({ data }) => { row = { ...row, ...data }; return row },
         } }) },
-        '@/lib/server/codex-session-workspace': { getCodexSessionWorkspacePath: () => '/unused' },
+        '@/lib/server/codex-session-workspace': { getCodexSessionWorkspacePath: () => workspace },
         '@/lib/server/codex-app-server': {
             reserveActiveCodexRun: () => ({}), finishActiveCodexRun: () => {}, isCodexRunInterruptedError: () => false,
             runNovelCodexTurn: async (input) => { calls.push(input); return { status: 'completed', threadId: 'thread', assistantText: 'Received.' } },
         },
     }
-    const pure = new Set(['@/lib/server/codex-session', '@/lib/server/storage', '@/lib/codex-response-annotations', '@/lib/server/codex-assistant-text', '@/lib/server/codex-live-messages', '@/lib/server/codex-message-projection'])
+    const pure = new Set(['@/lib/codex-artifacts', '@/lib/server/codex-session', '@/lib/server/storage', '@/lib/codex-response-annotations', '@/lib/server/codex-assistant-text', '@/lib/server/codex-live-messages', '@/lib/server/codex-message-projection'])
     const output = ts.transpileModule(fs.readFileSync(path.join(src, 'app/api/codex/sessions/[id]/messages/route.ts'), 'utf8'), {
         compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
     }).outputText
     const module = { exports: {} }
     new Function('require', 'module', 'exports', output)((name) => Object.hasOwn(mocks, name) ? mocks[name] : pure.has(name) ? jiti(name) : name.startsWith('@/') ? {} : require(name), module, module.exports)
-    return { calls, row: () => row, send: (content, attachments, responseAnnotations) => module.exports.POST(new Request('http://localhost/messages', { method: 'POST', body: JSON.stringify({ messageId: 'message', content, attachments, responseAnnotations }) }), { params: Promise.resolve({ id: 'session' }) }) }
+    return { calls, row: () => row, send: (content, attachments, responseAnnotations, artifactFiles) => module.exports.POST(new Request('http://localhost/messages', { method: 'POST', body: JSON.stringify({ messageId: 'message', content, attachments, responseAnnotations, artifactFiles }) }), { params: Promise.resolve({ id: 'session' }) }) }
 }
 
 for (const content of ['', 'Use the red marks.']) {
@@ -70,4 +70,30 @@ test('empty messages require a managed image or annotation; goals still require 
         assert.equal(app.calls.length, 0)
         assert.equal(app.row().messagesJson, '[]')
     }
+})
+
+
+test('document-only turns preserve references in the model prompt and stored history', async (t) => {
+    const workspace = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'onw-document-turn-'))
+    t.after(() => fs.rmSync(workspace, { recursive: true, force: true }))
+    fs.mkdirSync(path.join(workspace, 'artifacts'))
+    const files = ['form.pdf', 'notes.txt', 'reference.md', 'form.docx', 'old-form.doc']
+    for (const file of files) fs.writeFileSync(path.join(workspace, 'artifacts', file), 'fixture')
+    for (const mode of ['default', 'plan']) {
+        const app = fixture(mode, workspace)
+        const response = await app.send('', [], [], files)
+        assert.equal(response.status, 200)
+        assert.doesNotMatch(await response.text(), /event: error/)
+        for (const file of files) assert.ok(app.calls[0].prompt.includes(`artifacts/${file}`))
+        assert.match(app.calls[0].prompt, /Distinguish instructions inside attached documents/)
+        const message = JSON.parse(app.row().messagesJson)[0]
+        assert.equal(message.content, '')
+        assert.deepEqual(message.jsonArtifacts, files)
+    }
+    for (const files of [['missing.pdf'], ['../outside.pdf'], ['form.pdf', 'form.pdf']]) {
+        const app = fixture('default', workspace)
+        assert.equal((await app.send('', [], [], files)).status, 400)
+        assert.equal(app.calls.length, 0)
+    }
+    assert.equal((await fixture('goal', workspace).send('', [], [], files)).status, 400)
 })

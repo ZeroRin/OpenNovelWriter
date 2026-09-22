@@ -556,13 +556,15 @@
     line-height: var(--onw-write-line-height);
   }
 
-  .onw-manuscript-editor .ProseMirror-focused p.is-empty::before {
+  .onw-manuscript-editor .ProseMirror-focused p.is-empty {
     @variant md {
-      content: attr(data-placeholder);
-      color: var(--muted-foreground);
-      float: left;
-      height: 0;
-      pointer-events: none;
+      &::before {
+        content: attr(data-placeholder);
+        color: var(--muted-foreground);
+        float: left;
+        height: 0;
+        pointer-events: none;
+      }
     }
   }
 

@@ -1,3 +1,7 @@
+import fs from 'fs/promises'
+import path from 'path'
+import { parseCodexArtifactFiles } from '@/lib/codex-artifacts'
+import { getCodexSessionWorkspacePath } from '@/lib/server/codex-session-workspace'
 import { NextRequest, NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { getPrismaClient } from '@/lib/db'
@@ -37,7 +41,20 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         const body = await request.json().catch(() => null)
         const content = normalizeCodexString(body?.content).trim()
         const responseAnnotations = normalizeCodexResponseAnnotations(body?.responseAnnotations)
-        if (!content && responseAnnotations.length === 0) {
+        let artifactFiles: string[]
+        try {
+            artifactFiles = parseCodexArtifactFiles(body?.artifactFiles)
+        } catch (error) {
+            return NextResponse.json({ detail: (error as Error).message }, { status: 400 })
+        }
+        const artifactsPath = path.join(getCodexSessionWorkspacePath(user.userId, id), 'artifacts')
+        for (const fileName of artifactFiles) {
+            const stat = await fs.lstat(path.join(artifactsPath, fileName)).catch(() => null)
+            if (!stat?.isFile()) {
+                return NextResponse.json({ detail: `Artifact ${fileName} was not found in this session.` }, { status: 400 })
+            }
+        }
+        if (!content && responseAnnotations.length === 0 && artifactFiles.length === 0) {
             return NextResponse.json({ detail: 'Message content is required.' }, { status: 400 })
         }
 
@@ -46,6 +63,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
             message: content,
             attachments: normalizeManagedAttachmentUrls(body?.attachments),
             responseAnnotations,
+            artifactFiles,
         })
         return NextResponse.json({ ok: true })
     } catch (error) {

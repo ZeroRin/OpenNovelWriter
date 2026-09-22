@@ -1,3 +1,4 @@
+import { isCodexArtifactFileName } from '@/lib/codex-artifacts'
 import { projectCodexMessage } from '@/lib/server/codex-message-projection'
 import { getCodexSessionPreviewTitle, getCodexSessionPreviewText } from '@/lib/codex-message-preview'
 import type { CodexWorkMetadata } from '@/lib/codex-work-events'
@@ -37,7 +38,7 @@ export type CodexSessionMessage = CodexWorkMetadata & {
     contextWindow?: CodexContextWindow | null
     /** Managed `/uploads/...` image URLs attached to this message. */
     attachments?: string[]
-    /** JSON artifact file names attached to this message's Codex turn. */
+    /** Document and JSON file names attached to this message's Codex turn. */
     jsonArtifacts?: string[]
     /** Text selected from earlier Codex replies and attached as turn context. */
     responseAnnotations?: CodexResponseAnnotation[]
@@ -245,9 +246,7 @@ export function parseCodexSessionMessages(value: string | null | undefined): Cod
                     ? record.attachments.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
                     : []
                 const jsonArtifacts = Array.isArray(record.jsonArtifacts)
-                    ? record.jsonArtifacts.filter((fileName): fileName is string =>
-                        typeof fileName === 'string' && /^[^/\\]+\.json$/i.test(fileName)
-                    )
+                    ? record.jsonArtifacts.filter(isCodexArtifactFileName)
                     : []
                 const responseAnnotations = normalizeCodexResponseAnnotations(record.responseAnnotations)
                 const sentAsGoal = record.sentAsGoal === true
@@ -295,7 +294,7 @@ export function parseCodexDraftArtifacts(value: string | null | undefined): Code
                 const record = item as Record<string, unknown>
                 if (
                     typeof record.fileName !== 'string' ||
-                    !/^[^/\\]+\.json$/i.test(record.fileName) ||
+                    !isCodexArtifactFileName(record.fileName) ||
                     typeof record.originalName !== 'string' ||
                     typeof record.size !== 'number' ||
                     !Number.isFinite(record.size) ||

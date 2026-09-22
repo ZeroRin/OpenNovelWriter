@@ -100,6 +100,7 @@ export type QueuedCodexMessage = {
     id: string
     content: string
     attachments: string[]
+    artifactFiles: string[]
     responseAnnotations: CodexResponseAnnotation[]
     createdAt: string
 }
@@ -122,7 +123,7 @@ type CodexStoreState = {
     refreshUserInputRequests: (sessionId: string) => Promise<void>
     answerUserInput: (sessionId: string, requestId: string, response: CodexUserInputResponse) => Promise<void>
     imageAttachmentsBySession: Record<string, PendingImageAttachment[]>
-    jsonArtifactUploadingBySession: Record<string, boolean>
+    artifactUploadingBySession: Record<string, boolean>
     queuedMessagesBySession: Record<string, QueuedCodexMessage[]>
     queueingEnabledBySession: Record<string, boolean>
     queuePausedBySession: Record<string, boolean>
@@ -167,7 +168,7 @@ type CodexStoreState = {
         sessionId: string,
         artifacts: CodexDraftArtifact[]
     ) => void
-    setJsonArtifactUploading: (sessionId: string, uploading: boolean) => void
+    setArtifactUploading: (sessionId: string, uploading: boolean) => void
     setQueuedMessages: (
         sessionId: string,
         updater: (current: QueuedCodexMessage[]) => QueuedCodexMessage[]
@@ -255,7 +256,7 @@ function removeSessionFromState(state: CodexStoreState, novelKey: string, sessio
     const pendingApprovalsBySession = { ...state.pendingApprovalsBySession }
     const userInputRequestsBySession = { ...state.userInputRequestsBySession }
     const imageAttachmentsBySession = { ...state.imageAttachmentsBySession }
-    const jsonArtifactUploadingBySession = { ...state.jsonArtifactUploadingBySession }
+    const artifactUploadingBySession = { ...state.artifactUploadingBySession }
     const queuedMessagesBySession = { ...state.queuedMessagesBySession }
     const queueingEnabledBySession = { ...state.queueingEnabledBySession }
     const queuePausedBySession = { ...state.queuePausedBySession }
@@ -265,7 +266,7 @@ function removeSessionFromState(state: CodexStoreState, novelKey: string, sessio
     delete userInputRequestsBySession[sessionId]
     bumpUserInputRevision(sessionId)
     delete imageAttachmentsBySession[sessionId]
-    delete jsonArtifactUploadingBySession[sessionId]
+    delete artifactUploadingBySession[sessionId]
     delete queuedMessagesBySession[sessionId]
     delete queueingEnabledBySession[sessionId]
     delete queuePausedBySession[sessionId]
@@ -276,7 +277,7 @@ function removeSessionFromState(state: CodexStoreState, novelKey: string, sessio
         pendingApprovalsBySession,
         userInputRequestsBySession,
         imageAttachmentsBySession,
-        jsonArtifactUploadingBySession,
+        artifactUploadingBySession,
         queuedMessagesBySession,
         queueingEnabledBySession,
         queuePausedBySession,
@@ -426,6 +427,7 @@ function eventToMessage(event: CodexRunEvent): CodexSession['messages'][number] 
         sceneEdit: event.sceneEdit,
         content: [event.title, event.content].filter(Boolean).join('\n\n'),
         attachments: event.attachments,
+        jsonArtifacts: event.jsonArtifacts,
         responseAnnotations: event.responseAnnotations,
         createdAt: event.createdAt,
     }
@@ -686,7 +688,7 @@ export const useEditorCodexStore = create<CodexStoreState>()((set, get) => ({
         } }))
     },
     imageAttachmentsBySession: {},
-    jsonArtifactUploadingBySession: {},
+    artifactUploadingBySession: {},
     queuedMessagesBySession: {},
     queueingEnabledBySession: {},
     queuePausedBySession: {},
@@ -1119,10 +1121,10 @@ export const useEditorCodexStore = create<CodexStoreState>()((set, get) => ({
             scheduleDraftSave(sessionId, { draftArtifacts })
         }
     },
-    setJsonArtifactUploading: (sessionId, uploading) => {
+    setArtifactUploading: (sessionId, uploading) => {
         set((state) => ({
-            jsonArtifactUploadingBySession: {
-                ...state.jsonArtifactUploadingBySession,
+            artifactUploadingBySession: {
+                ...state.artifactUploadingBySession,
                 [sessionId]: uploading,
             },
         }))

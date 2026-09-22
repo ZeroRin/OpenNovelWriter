@@ -1,3 +1,4 @@
+import { appendCodexArtifactReferences } from '@/lib/codex-artifacts'
 import { getCodexWorkStatus, type CodexWorkMetadata } from '@/lib/codex-work-events'
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process'
 import fs from 'fs/promises'
@@ -236,6 +237,7 @@ function throwIfCodexRunStopped(handle: CodexRunReservation) {
 export async function steerActiveCodexRun(input: {
     sessionId: string
     message: string
+    artifactFiles?: string[]
     attachments?: string[]
     responseAnnotations?: CodexResponseAnnotation[]
 }) {
@@ -245,15 +247,16 @@ export async function steerActiveCodexRun(input: {
     }
 
     const content = input.message.trim()
-    if (!content && !input.responseAnnotations?.length) {
+    if (!content && !input.responseAnnotations?.length && !input.artifactFiles?.length) {
         throw new Error('Steer message is required.')
     }
 
     const imageItems = resolveCodexImageInputItems(input.attachments)
-    const prompt = prependCodexResponseAnnotations(content, input.responseAnnotations ?? [])
+    const prompt = prependCodexResponseAnnotations(appendCodexArtifactReferences(content, input.artifactFiles ?? []), input.responseAnnotations ?? [])
     const event: CodexRunEvent = {
         id: `codex_steer_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`,
         kind: 'steer',
+        jsonArtifacts: input.artifactFiles,
         title: 'Steered conversation',
         content,
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
@@ -603,6 +606,7 @@ type CodexRunEvent = CodexWorkMetadata & {
     content: string
     /** Managed `/uploads/...` image URLs carried by this event (steer input, generated images). */
     attachments?: string[]
+    jsonArtifacts?: string[]
     responseAnnotations?: CodexResponseAnnotation[]
     createdAt: string
 }

@@ -1,5 +1,7 @@
 'use client'
 
+import { CODEX_ARTIFACT_ACCEPT, CODEX_ARTIFACT_MAX_COUNT, isCodexArtifactFileName } from '@/lib/codex-artifacts'
+
 import { type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject, Fragment, createContext, useCallback, useContext, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
@@ -170,14 +172,17 @@ type QueuedCodexMessage = {
     id: string
     content: string
     attachments: string[]
+    artifactFiles: string[]
     responseAnnotations: CodexResponseAnnotation[]
     createdAt: string
 }
 
-function JsonArtifactChips({
+function ArtifactChips({
     fileNames,
     className,
+    inverted = true,
 }: {
+    inverted?: boolean
     fileNames: string[] | null | undefined
     className?: string
 }) {
@@ -188,7 +193,9 @@ function JsonArtifactChips({
             {fileNames.map((fileName) => (
                 <span
                     key={fileName}
-                    className="flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-primary-foreground/25 bg-primary-foreground/10 px-2 py-1 text-xs text-primary-foreground dark:border-accent-foreground/25 dark:bg-accent-foreground/10 dark:text-accent-foreground"
+                    className={cn('flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs', inverted
+                        ? 'border-primary-foreground/25 bg-primary-foreground/10 text-primary-foreground dark:border-accent-foreground/25 dark:bg-accent-foreground/10 dark:text-accent-foreground'
+                        : 'bg-muted/60 text-foreground')}
                     title={fileName}
                 >
                     <FileText className="h-3.5 w-3.5 shrink-0" />
@@ -208,12 +215,14 @@ const PLAN_COMPOSER_ACTION_OPTIONS: CodexComposerActionOption[] = [
 function createQueuedCodexMessage(
     content: string,
     attachments: string[],
-    responseAnnotations: CodexResponseAnnotation[]
+    responseAnnotations: CodexResponseAnnotation[],
+    artifactFiles: string[] = []
 ): QueuedCodexMessage {
     return {
         id: `codex_queue_${crypto.randomUUID?.() ?? Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`,
         content,
         attachments,
+        artifactFiles,
         responseAnnotations,
         createdAt: new Date().toISOString(),
     }
@@ -226,6 +235,7 @@ function mergeQueuedCodexMessages(messages: QueuedCodexMessage[]) {
             .filter((content) => content.length > 0)
             .join('\n\n'),
         attachments: [...new Set(messages.flatMap((message) => message.attachments))],
+        artifactFiles: [...new Set(messages.flatMap((message) => message.artifactFiles))],
         responseAnnotations: messages.flatMap((message) => message.responseAnnotations),
     }
 }
@@ -720,7 +730,8 @@ function getComposerMentionTextClass(kind: ComposerMentionKind) {
 function createOptimisticSteerMessage(
     content: string,
     attachments: string[],
-    responseAnnotations: CodexResponseAnnotation[]
+    responseAnnotations: CodexResponseAnnotation[],
+    artifactFiles: string[] = []
 ): CodexSessionMessage {
     return {
         id: `codex_optimistic_steer_${crypto.randomUUID?.() ?? Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`,
@@ -728,6 +739,7 @@ function createOptimisticSteerMessage(
         kind: 'steer',
         content: ['Steered conversation', content].join('\n\n'),
         attachments,
+        jsonArtifacts: artifactFiles,
         responseAnnotations,
         createdAt: new Date().toISOString(),
     }
@@ -2273,6 +2285,7 @@ function QueuedMessageRow({
                             <div className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">
                                 {message.content}
                             </div>
+                            <ArtifactChips fileNames={message.artifactFiles} inverted={false} className="mt-2 justify-start" />
                             <ResponseAnnotationSummary annotations={message.responseAnnotations} className="mt-2" />
                         </>
                     )}
@@ -2408,6 +2421,7 @@ function MessageBubble({ message }: { message: CodexSessionMessage }) {
                         </div>
                         <div className="max-w-full rounded-2xl bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground dark:bg-accent dark:text-accent-foreground">
                             <ImageThumbnails urls={message.attachments} className="mb-1.5" />
+                            <ArtifactChips fileNames={message.jsonArtifacts} className="mb-1.5" />
                             <ResponseAnnotationSummary
                                 annotations={message.responseAnnotations}
                                 inverted
@@ -2460,7 +2474,7 @@ function MessageBubble({ message }: { message: CodexSessionMessage }) {
                     )}
                 >
                     <ImageThumbnails urls={message.attachments} className={cn(message.content.trim() && 'mb-1.5')} />
-                    {isUser && <JsonArtifactChips fileNames={message.jsonArtifacts} className={message.content.trim() ? 'mb-1.5' : undefined} />}
+                    {isUser && <ArtifactChips fileNames={message.jsonArtifacts} className={message.content.trim() ? 'mb-1.5' : undefined} />}
                     {isUser && (
                         <ResponseAnnotationSummary
                             annotations={message.responseAnnotations}
@@ -3012,8 +3026,8 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
     const updateImageAttachments = useEditorCodexStore((state) => state.updateImageAttachments)
     const updateDraftArtifacts = useEditorCodexStore((state) => state.updateDraftArtifacts)
     const imageAttachmentsBySession = useEditorCodexStore((state) => state.imageAttachmentsBySession)
-    const jsonArtifactUploadingBySession = useEditorCodexStore((state) => state.jsonArtifactUploadingBySession)
-    const setJsonArtifactUploading = useEditorCodexStore((state) => state.setJsonArtifactUploading)
+    const artifactUploadingBySession = useEditorCodexStore((state) => state.artifactUploadingBySession)
+    const setArtifactUploading = useEditorCodexStore((state) => state.setArtifactUploading)
     const queuedMessagesBySession = useEditorCodexStore((state) => state.queuedMessagesBySession)
     const queueingEnabledBySession = useEditorCodexStore((state) => state.queueingEnabledBySession)
     const queuePausedBySession = useEditorCodexStore((state) => state.queuePausedBySession)
@@ -3294,8 +3308,8 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
     const imageCommentPrompt = formatImageComments(imageItems)
     const imageCommentCount = imageItems.reduce((count, item) => count + (item.comments?.length ?? 0), 0)
     const activeImageComments = activeEditingImage ? imageItems.find((item) => item.id === `${COMMENT_IMAGE_ATTACHMENT_PREFIX}${activeEditingImage.id}`)?.comments ?? [] : []
-    const jsonArtifactUploading = selectedSessionId
-        ? jsonArtifactUploadingBySession[selectedSessionId] ?? false
+    const artifactUploading = selectedSessionId
+        ? artifactUploadingBySession[selectedSessionId] ?? false
         : false
     selectedSessionIdRef.current = selectedSessionId
 
@@ -3359,23 +3373,26 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
 
     const addComposerFiles = async (files: File[]) => {
         const images = files.filter((file) => file.type.startsWith('image/'))
-        const jsonFiles = files.filter((file) => file.name.toLowerCase().endsWith('.json'))
-        const unsupported = files.length - images.length - jsonFiles.length
-        if (unsupported > 0) setRunError(t('codex.artifactJsonOnly'))
-        if (images.length === 0 && jsonFiles.length === 0) return
+        const artifactFiles = files.filter((file) => isCodexArtifactFileName(file.name))
+        const unsupported = files.length - images.length - artifactFiles.length
+        if (unsupported > 0) setRunError(t('codex.artifactUnsupported'))
+        if (images.length === 0 && artifactFiles.length === 0) return
         const sessionId = selectedSession?.id ?? await ensureSession()
         if (!sessionId) return
         selectedSessionIdRef.current = sessionId
         if (images.length > 0) imageAttachments.addFiles(images, sessionId)
-        if (jsonFiles.length === 0) return
-        if (running) {
-            setRunError(t('codex.artifactWhileRunning'))
+        if (artifactFiles.length === 0) return
+        const state = useEditorCodexStore.getState()
+        if (state.artifactUploadingBySession[sessionId]) return
+        const currentSession = state.sessionsByNovel[novelId?.trim() || '__default__']?.sessions.find((item) => item.id === sessionId)
+        if ((currentSession?.draftArtifacts.length ?? 0) + artifactFiles.length > CODEX_ARTIFACT_MAX_COUNT) {
+            setRunError(t('codex.artifactCount'))
             return
         }
-        setJsonArtifactUploading(sessionId, true)
+        setArtifactUploading(sessionId, true)
         try {
-            for (const file of jsonFiles) {
-                const result = await codexSessionApi.uploadJsonArtifact(sessionId, file)
+            for (const file of artifactFiles) {
+                const result = await codexSessionApi.uploadArtifact(sessionId, file)
                 const novelKey = novelId?.trim() || '__default__'
                 const session = useEditorCodexStore
                     .getState()
@@ -3385,23 +3402,15 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         } catch (error) {
             setRunError(error instanceof Error ? error.message : String(error))
         } finally {
-            setJsonArtifactUploading(sessionId, false)
+            setArtifactUploading(sessionId, false)
         }
     }
 
     const handleComposerPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-        if (selectedSessionIdRef.current) {
-            imageAttachments.handlePaste(event)
-            return
-        }
-        const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/'))
-        if (images.length === 0) return
+        const files = Array.from(event.clipboardData.files)
+        if (files.length === 0) return
         event.preventDefault()
-        void ensureSession().then((sessionId) => {
-            if (!sessionId) return
-            selectedSessionIdRef.current = sessionId
-            imageAttachments.addFiles(images, sessionId)
-        })
+        void addComposerFiles(files)
     }
 
     // Refresh on return and while tasks run so interrupted streams can recover.
@@ -3845,9 +3854,9 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
     const queuedMessages = selectedSession ? queuedMessagesBySession[selectedSession.id] ?? [] : []
     const queueingEnabled = selectedSession ? queueingEnabledBySession[selectedSession.id] ?? true : true
     const queuePaused = selectedSession ? queuePausedBySession[selectedSession.id] ?? false : false
-    const jsonArtifacts = selectedSession?.draftArtifacts ?? []
+    const draftArtifacts = selectedSession?.draftArtifacts ?? []
     const draftIsEmpty = !draft.trim() && !imageCommentPrompt && !markupActive
-        && (responseAnnotations.length === 0 || (goalMode && !running))
+        && ((responseAnnotations.length === 0 && draftArtifacts.length === 0) || (goalMode && !running))
 
     useEffect(() => {
         if (!selectedSession?.id) return
@@ -4217,7 +4226,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         artifactFiles?: string[],
         responseAnnotations?: CodexResponseAnnotation[]
     ) => {
-        if ((!content.trim() && !responseAnnotations?.length) || running) return { accepted: false, error: null }
+        if ((!content.trim() && !responseAnnotations?.length && !artifactFiles?.length) || running) return { accepted: false, error: null }
         setRunError(null)
         const targetSessionId = sessionId ?? await ensureSession()
         if (!targetSessionId) return { accepted: false, error: null }
@@ -4241,11 +4250,12 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         sessionId: string,
         content: string,
         attachments: string[],
-        responseAnnotations: CodexResponseAnnotation[]
+        responseAnnotations: CodexResponseAnnotation[],
+        artifactFiles: string[] = []
     ) => {
         setQueuedMessages(sessionId, (current) => [
             ...current,
-            createQueuedCodexMessage(content, attachments, responseAnnotations),
+            createQueuedCodexMessage(content, attachments, responseAnnotations, artifactFiles),
         ])
     }
 
@@ -4283,15 +4293,15 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
 
         try {
             if (running) {
-                await steerContent(merged.content, sessionId, merged.attachments, merged.responseAnnotations)
-            } else if (merged.content || merged.responseAnnotations.length > 0) {
+                await steerContent(merged.content, sessionId, merged.attachments, merged.responseAnnotations, merged.artifactFiles)
+            } else if (merged.content || merged.responseAnnotations.length > 0 || merged.artifactFiles.length > 0) {
                 const result = await sendContent(
                     merged.content,
                     sessionId,
                     undefined,
                     undefined,
                     merged.attachments,
-                    undefined,
+                    merged.artifactFiles,
                     merged.responseAnnotations
                 )
                 if (!result.accepted) {
@@ -4322,7 +4332,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                 undefined,
                 undefined,
                 message.attachments,
-                undefined,
+                message.artifactFiles,
                 message.responseAnnotations
             )
             if (!result.accepted || result.error) setQueuePaused(sessionId, true)
@@ -4340,18 +4350,19 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         content: string,
         sessionId?: string | null,
         attachments: string[] = [],
-        responseAnnotations: CodexResponseAnnotation[] = []
+        responseAnnotations: CodexResponseAnnotation[] = [],
+        artifactFiles: string[] = []
     ) => {
         const normalizedContent = flattenSkillCommandsForSteer(content).trim()
-        if (!normalizedContent && responseAnnotations.length === 0) return
+        if (!normalizedContent && responseAnnotations.length === 0 && artifactFiles.length === 0) return
         setRunError(null)
         const targetSessionId = sessionId ?? await ensureSession()
         if (!targetSessionId) return
-        const optimisticMessage = createOptimisticSteerMessage(normalizedContent, attachments, responseAnnotations)
+        const optimisticMessage = createOptimisticSteerMessage(normalizedContent, attachments, responseAnnotations, artifactFiles)
         setOptimisticSteerMessages(targetSessionId, (current) => [...current, optimisticMessage])
 
         try {
-            await codexSessionApi.steerMessage(targetSessionId, normalizedContent, attachments, responseAnnotations)
+            await codexSessionApi.steerMessage(targetSessionId, normalizedContent, attachments, responseAnnotations, artifactFiles)
             updateDraft(novelId, targetSessionId, '')
         } catch (error) {
             setOptimisticSteerMessages(targetSessionId, (current) =>
@@ -4498,7 +4509,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
             activateSlashItem(exactBuiltin)
             return
         }
-        if (draftIsEmpty || imageAttachments.uploading || jsonArtifactUploading || preparingEditingImage || savingImageComment || (markupActive && sendingImageEditRef.current)) return
+        if (draftIsEmpty || imageAttachments.uploading || artifactUploading || preparingEditingImage || savingImageComment || (markupActive && sendingImageEditRef.current)) return
         const markupEditor = markupActive ? imageEditorRef.current : null
         if (markupActive && (running || !markupEditor)) return
         if (markupEditor) {
@@ -4532,7 +4543,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
             const expandedText = expandChapterMentions(expandedActs, hasMention ? buildChapterMentionList(chapterList) : [])
             const content = markupEditor ? expandedText.trim() : [expandedText.trim(), imageCommentPrompt].filter(Boolean).join('\n\n')
             const annotations = responseAnnotationsBySession[targetSessionId] ?? []
-            if (!content && !markupEditor && annotations.length === 0) return
+            if (!content && !markupEditor && annotations.length === 0 && draftArtifacts.length === 0) return
             if (goalMode && !goal && content.length > 4000) {
                 setRunError(t('codex.goal.tooLong'))
                 return
@@ -4555,13 +4566,14 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                 return
             }
             const attachments = imageAttachments.readyUrls
-            const artifactFiles = jsonArtifacts.map((artifact) => artifact.fileName)
+            const artifactFiles = draftArtifacts.map((artifact) => artifact.fileName)
 
             if (running) {
                 if (queueingEnabled && !goalMode) {
                     // This becomes a normal turn after the active one finishes, so retain the
                     // structured token for the messages route to resolve into a skill input item.
-                    enqueueQueuedMessage(targetSessionId, content, attachments, annotations)
+                    enqueueQueuedMessage(targetSessionId, content, attachments, annotations, artifactFiles)
+                    updateDraftArtifacts(novelId, targetSessionId, [])
                     imageAttachments.clear()
                     clearResponseAnnotations(targetSessionId)
                     updateDraft(novelId, targetSessionId, '')
@@ -4570,7 +4582,9 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
 
                 imageAttachments.clear()
                 clearResponseAnnotations(targetSessionId)
-                await steerContent(content, targetSessionId, attachments, annotations)
+                await steerContent(content, targetSessionId, attachments, annotations, artifactFiles)
+                const current = useEditorCodexStore.getState().sessionsByNovel[novelId?.trim() || '__default__']?.sessions.find((session) => session.id === targetSessionId)
+                updateDraftArtifacts(novelId, targetSessionId, (current?.draftArtifacts ?? []).filter((artifact) => !artifactFiles.includes(artifact.fileName)))
                 return
             }
 
@@ -4583,7 +4597,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
 
             setTweakOpen(false)
             clearResponseAnnotations(targetSessionId)
-            updateDraftArtifacts(novelId, targetSessionId, [])
             await sendContent(
                 content,
                 targetSessionId,
@@ -4983,14 +4996,16 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                                                     message.content,
                                                     targetSessionId,
                                                     message.attachments,
-                                                    message.responseAnnotations
+                                                    message.responseAnnotations,
+                                                    message.artifactFiles
                                                 )
                                             } catch {
                                                 enqueueQueuedMessage(
                                                     targetSessionId,
                                                     message.content,
                                                     message.attachments,
-                                                    message.responseAnnotations
+                                                    message.responseAnnotations,
+                                                    message.artifactFiles
                                                 )
                                             }
                                         })()
@@ -5138,9 +5153,9 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                         <AttachmentStrip items={imageAttachments.items} onRemove={imageAttachments.removeItem} />
                         <ImageCommentSummary items={imageAttachments.items} onRemove={removeCommentAttachments} />
                     </div>
-                    {jsonArtifacts.length > 0 && (
+                    {draftArtifacts.length > 0 && (
                         <div className="mb-2 flex flex-wrap gap-1.5">
-                            {jsonArtifacts.map((artifact) => (
+                            {draftArtifacts.map((artifact) => (
                                 <span
                                     key={artifact.fileName}
                                     className="flex min-w-0 max-w-full items-center gap-1.5 rounded-md border bg-muted/60 px-2 py-1 text-xs text-foreground"
@@ -5157,7 +5172,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                                             updateDraftArtifacts(
                                                 novelId,
                                                 selectedSessionId,
-                                                jsonArtifacts.filter((item) => item.fileName !== artifact.fileName)
+                                                draftArtifacts.filter((item) => item.fileName !== artifact.fileName)
                                             )
                                         }}
                                     >
@@ -5436,7 +5451,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                         <input
                             ref={composerFileInputRef}
                             type="file"
-                            accept="image/jpeg,image/png,image/webp,application/json,.json"
+                            accept={`image/jpeg,image/png,image/webp,${CODEX_ARTIFACT_ACCEPT}`}
                             multiple
                             className="hidden"
                             onChange={(event) => {
@@ -5450,9 +5465,11 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                             variant="ghost"
                             title={t('codex.artifactAdd')}
                             aria-label={t('codex.artifactAdd')}
+                            disabled={artifactUploading}
+                            aria-busy={artifactUploading}
                             onClick={() => composerFileInputRef.current?.click()}
                         >
-                            <Paperclip className="h-4 w-4" />
+                            {artifactUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
                         </Button>
                         {planMode && (
                             <Button

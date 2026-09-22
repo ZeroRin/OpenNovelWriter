@@ -42,7 +42,7 @@ test('queued submissions preserve rejected inputs and pause without replaying ac
         draftContent: '', draftAttachments: [], draftArtifacts: [], messages: [],
         updatedAt: '2026-09-07T00:00:00.000Z', lastError: null,
     }
-    const first = { id: 'first', content: 'Keep this instruction', attachments: ['/uploads/a.png'], responseAnnotations: [{ text: 'Selected text', annotation: 'Keep this comment' }], createdAt: session.updatedAt }
+    const first = { id: 'first', content: 'Keep this instruction', attachments: ['/uploads/a.png'], artifactFiles: ['reference.pdf', 'notes.docx'], responseAnnotations: [{ text: 'Selected text', annotation: 'Keep this comment' }], createdAt: session.updatedAt }
     const second = { ...first, id: 'second', content: 'Next instruction', attachments: [], responseAnnotations: [] }
     const current = () => store.getState().sessionsByNovel[session.novelId].sessions[0]
     const queue = () => store.getState().queuedMessagesBySession[session.id]
@@ -104,6 +104,7 @@ test('queued submissions preserve rejected inputs and pause without replaying ac
         assert.equal(paused(), false)
         assert.equal(current().messages[0].content, first.content)
         assert.deepEqual(current().messages[0].attachments, first.attachments)
+        assert.deepEqual(current().messages[0].jsonArtifacts, first.artifactFiles)
         assert.deepEqual(current().messages[0].responseAnnotations, first.responseAnnotations)
     })
 
@@ -149,9 +150,26 @@ test('queued submissions preserve rejected inputs and pause without replaying ac
     }
 
     for (const action of ['process', 'disable queueing']) {
+        await t.test(`document-only queued messages are sent when ${action}`, async () => {
+            seed()
+            const message = { ...first, content: '', attachments: [], responseAnnotations: [] }
+            store.getState().setQueuedMessages(session.id, () => [message])
+            const requests = []
+            api.streamMessage = async (_id, content, options) => {
+                requests.push({ content, files: options.artifactFiles })
+                options.onEvent({ type: 'done', session: { ...current(), status: 'idle' } })
+            }
+            if (action === 'process') await render().process(session.id, message)
+            else await render().toggle(session.id, false)
+            assert.deepEqual(requests, [{ content: '', files: first.artifactFiles }])
+            assert.deepEqual(queue(), [])
+            assert.equal(Boolean(paused()), false)
+        })
+    }
+    for (const action of ['process', 'disable queueing']) {
         await t.test(`annotation-only queued messages are sent when ${action}`, async () => {
             seed()
-            const message = { ...first, content: '', attachments: [] }
+            const message = { ...first, content: '', attachments: [], artifactFiles: [] }
             store.getState().setQueuedMessages(session.id, () => [message])
             const requests = []
             api.streamMessage = async (_id, content, options) => {
@@ -164,5 +182,57 @@ test('queued submissions preserve rejected inputs and pause without replaying ac
             assert.deepEqual(queue(), [])
             assert.equal(Boolean(paused()), false)
         })
+    }
+})
+
+test('the composer retains document drafts on rejection and includes them in sends, queues, and steering', async (t) => {
+    const { useEditorCodexStore: store, CodexSendError } = await jiti.import('./editor-codex-store.ts')
+    const { codexSessionApi: api, ApiError } = await jiti.import('../../lib/api.ts')
+    const originalState = store.getState()
+    const originalApi = { get: api.get, update: api.update, streamMessage: api.streamMessage }
+    t.after(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 550))
+        Object.assign(api, originalApi)
+        store.setState(originalState, true)
+    })
+    for (const action of ['send', 'reject', 'queue', 'steer']) {
+        const artifact = { fileName: 'form.pdf', originalName: 'form.pdf', size: 12 }
+        const session = { id: 'document-composer', novelId: 'document-novel', historyLoaded: true, status: 'idle', draftContent: '', draftAttachments: [], draftArtifacts: [artifact], messages: [], updatedAt: new Date().toISOString() }
+        store.setState({ sessionsByNovel: { [session.novelId]: { sessions: [session], selectedSessionId: session.id, loaded: true } }, queuedMessagesBySession: {} })
+        const current = () => store.getState().sessionsByNovel[session.novelId].sessions[0]
+        api.get = async () => ({ session })
+        api.update = async () => ({ session: current() })
+        let submitted
+        api.streamMessage = async (_id, content, options) => {
+            submitted = { content, files: options.artifactFiles }
+            if (action === 'reject') throw new ApiError(400, 'Rejected')
+            options.onEvent({ type: 'done', session: { ...current(), status: 'idle' } })
+        }
+        const dependencies = {
+            CodexSendError, novelId: session.novelId, selectedSession: session, draft: '', draftArtifacts: [artifact],
+            slash: null, draftIsEmpty: false, markupActive: false, artifactUploading: false,
+            preparingEditingImage: false, savingImageComment: false, running: action === 'queue' || action === 'steer',
+            queueingEnabled: action === 'queue', goalMode: false, goal: null, imageCommentPrompt: '',
+            imageAttachments: { readyUrls: [], uploading: false, clear: () => {} },
+            responseAnnotationsBySession: {}, clearResponseAnnotations: () => {},
+            expandSkillCommands: (text) => ({ text, skillIds: [] }),
+            activePromptSkill: null, setTweakOpen: () => {}, setTweakBlocks: () => {}, setTweakChatInput: () => {},
+            setRunError: () => {}, ensureSession: async () => session.id, useEditorCodexStore: store,
+            sendMessage: store.getState().sendMessage, updateDraftArtifacts: store.getState().updateDraftArtifacts,
+            updateDraft: store.getState().updateDraft, setQueuedMessages: store.getState().setQueuedMessages,
+            createQueuedCodexMessage: callback('createQueuedCodexMessage', {}),
+            steerContent: async (_content, _id, _images, _annotations, files) => { submitted = { content: _content, files } },
+        }
+        for (const name of ['expandModelMentions', 'expandTermMentions', 'expandSnippetMentions', 'expandMaterialMentions', 'expandDetailedOutlineMentions', 'expandActMentions', 'expandChapterMentions']) dependencies[name] = (text) => text
+        dependencies.sendContent = callback('sendContent', dependencies)
+        dependencies.enqueueQueuedMessage = callback('enqueueQueuedMessage', dependencies)
+        callback('submit', dependencies)()
+        await new Promise((resolve) => setImmediate(resolve))
+        if (action === 'queue') {
+            assert.deepEqual(store.getState().queuedMessagesBySession[session.id][0].artifactFiles, ['form.pdf'])
+        } else {
+            assert.deepEqual(submitted, { content: '', files: ['form.pdf'] }, action)
+        }
+        assert.deepEqual(current().draftArtifacts, action === 'reject' ? [artifact] : [], action)
     }
 })

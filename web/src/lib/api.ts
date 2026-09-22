@@ -1494,6 +1494,7 @@ export type CodexRunEvent = CodexWorkMetadata & {
     title: string
     content: string
     attachments?: string[]
+    jsonArtifacts?: string[]
     responseAnnotations?: CodexResponseAnnotation[]
     createdAt: string
 }
@@ -1740,7 +1741,7 @@ export const codexSessionApi = {
             body: JSON.stringify({ completedAt }),
         }),
 
-    uploadJsonArtifact: async (id: string, file: File) => {
+    uploadArtifact: async (id: string, file: File) => {
         const token = useAuthStore.getState().token
         if (!token) throw new ApiError(401, 'Not authenticated - no token available')
         const form = new FormData()
@@ -1786,11 +1787,12 @@ export const codexSessionApi = {
         id: string,
         content: string,
         attachments?: string[],
-        responseAnnotations?: CodexResponseAnnotation[]
+        responseAnnotations?: CodexResponseAnnotation[],
+        artifactFiles?: string[]
     ) =>
         fetchApi<{ ok: true }>(`/codex/sessions/${encodeURIComponent(id)}/steer`, {
             method: 'POST',
-            body: JSON.stringify({ content, attachments, responseAnnotations }),
+            body: JSON.stringify({ content, attachments, responseAnnotations, artifactFiles }),
         }),
 
     stop: (id: string) =>

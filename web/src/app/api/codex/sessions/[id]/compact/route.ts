@@ -126,6 +126,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                     workStatus: event.workStatus,
                     toolInput: event.toolInput,
                     attachments: event.attachments,
+                    jsonArtifacts: event.jsonArtifacts,
                     content: [event.title, event.content].filter(Boolean).join('\n\n'),
                     createdAt: event.createdAt,
                 }

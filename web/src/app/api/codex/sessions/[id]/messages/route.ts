@@ -1,3 +1,4 @@
+import { appendCodexArtifactReferences, parseCodexArtifactFiles } from '@/lib/codex-artifacts'
 import { registerLiveCodexMessages } from '@/lib/server/codex-live-messages'
 import { projectCodexRunEvent } from '@/lib/server/codex-message-projection'
 import type { CodexWorkMetadata } from '@/lib/codex-work-events'
@@ -81,6 +82,7 @@ type CodexRouteRunEvent = CodexWorkMetadata & {
     title: string
     content: string
     attachments?: string[]
+    jsonArtifacts?: string[]
     responseAnnotations?: CodexResponseAnnotation[]
     createdAt: string
 }
@@ -126,6 +128,7 @@ function upsertEventMessage(messages: CodexSessionMessage[], event: CodexRouteRu
         toolInput: event.toolInput,
         content: [event.title, event.content].filter(Boolean).join('\n\n'),
         attachments: event.attachments ?? [],
+        jsonArtifacts: event.jsonArtifacts,
         ...(event.responseAnnotations?.length ? { responseAnnotations: event.responseAnnotations } : {}),
         createdAt: event.createdAt,
     }
@@ -170,11 +173,17 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     const content = normalizeCodexString(body?.content).trim()
     const attachments = normalizeManagedAttachmentUrls(body?.attachments)
     const responseAnnotations = normalizeCodexResponseAnnotations(body?.responseAnnotations)
+    let artifactFiles: string[]
+    try {
+        artifactFiles = parseCodexArtifactFiles(body?.artifactFiles)
+    } catch (error) {
+        return NextResponse.json({ detail: (error as Error).message }, { status: 400 })
+    }
     const currentGoal = parseCodexThreadGoal(existing.goalJson)
     if (resumeGoal && (!existing.codexThreadId || !currentGoal || currentGoal.status === 'complete')) {
         return NextResponse.json({ detail: 'This session has no paused goal to resume.' }, { status: 409 })
     }
-    if (!resumeGoal && !content && ((attachments.length === 0 && responseAnnotations.length === 0) || existing.composerMode === 'goal')) {
+    if (!resumeGoal && !content && ((attachments.length === 0 && artifactFiles.length === 0 && responseAnnotations.length === 0) || existing.composerMode === 'goal')) {
         return NextResponse.json({ detail: 'Message content is required.' }, { status: 400 })
     }
     if (!resumeGoal && !messageId) {
@@ -182,14 +191,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     }
     if (!resumeGoal && existing.composerMode === 'goal' && currentGoal === null && content.length > 4000) {
         return NextResponse.json({ detail: 'Goal objective must contain at most 4,000 characters.' }, { status: 400 })
-    }
-    const artifactFiles = Array.isArray(body?.artifactFiles)
-        ? [...new Set((body.artifactFiles as unknown[]).filter((value): value is string =>
-            typeof value === 'string' && /^[^/\\]+\.json$/i.test(value)
-        ))].slice(0, 10)
-        : []
-    if (artifactFiles.length !== (Array.isArray(body?.artifactFiles) ? body.artifactFiles.length : 0)) {
-        return NextResponse.json({ detail: 'artifactFiles must contain unique JSON file names.' }, { status: 400 })
     }
 
     const activeRun = reserveActiveCodexRun(id)
@@ -420,9 +421,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         let finalPromptText = seededArtifactFileName
             ? `${promptText}\n\n[OpenNovelWriter] The prompt for the skill above is pre-assembled with the author's inputs (overview + referenced terms included) in artifacts/${seededArtifactFileName}. Follow the skill's instructions — call run_llm against that file, or read it for context.`
             : promptText
-        if (artifactFiles.length > 0) {
-            finalPromptText += `\n\n[OpenNovelWriter] The author attached these JSON files to this turn: ${artifactFiles.map((fileName) => `artifacts/${fileName}`).join(', ')}. Read them as source material for the request.`
-        }
+        finalPromptText = appendCodexArtifactReferences(finalPromptText, artifactFiles)
         finalPromptText = prependCodexResponseAnnotations(finalPromptText, responseAnnotations)
 
         const now = new Date()
