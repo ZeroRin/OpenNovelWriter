@@ -1,20 +1,26 @@
 import { appendCodexArtifactReferences } from '@/lib/codex-artifacts'
 import { getCodexWorkStatus, type CodexWorkMetadata } from '@/lib/codex-work-events'
+import { subagentsFromThreadItem, type CodexSubagent } from '@/lib/codex-subagents'
+import { CodexSubagentNotFoundError, readSubagentHistory, subagentFromNativeThread } from '@/lib/server/codex-subagent-history'
+import { getCodexConnectionHome } from '@/lib/server/codex-connection-storage'
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process'
 import fs from 'fs/promises'
 import path from 'path'
 import { getPrismaClient } from '@/lib/db'
 import { resolveManagedUploadPath, saveImageBuffer } from '@/lib/server/storage'
 import { DEFAULT_CODEX_MODEL, isCodexFastModeAllowed } from '@/lib/codex-config'
+import { isOfficialDeepSeekResponsesProvider } from '@/lib/codex-deepseek'
 import {
     prependCodexResponseAnnotations,
     type CodexResponseAnnotation,
 } from '@/lib/codex-response-annotations'
-import { ensureCodexConnectionHome } from '@/lib/server/codex-connection-storage'
 import { parseCodexAssistantNotification } from '@/lib/server/codex-assistant-notification'
 import { mergeCompletedAssistantText } from '@/lib/server/codex-assistant-text'
 import { CodexReasoningStream, type CodexReasoningDelta } from '@/lib/server/codex-reasoning-stream'
 import { syncCodexConnectionRuntimeFiles } from '@/lib/server/codex-runtime-config'
+import { getCodexOpenCodeGoConfig } from '@/lib/server/opencode-go'
+import { codexConfigOverrideArgs } from '@/lib/server/codex-config-overrides'
+import { getCodexSessionSkillConfig, rewriteCodexSkillReferences, type CodexSkillReference } from '@/lib/server/codex-session-skills'
 import { prepareCodexQuestionPolicy } from '@/lib/server/codex-question-policy'
 import type { CodexUserInputRequest } from '@/lib/codex-user-input'
 import {
@@ -154,6 +160,27 @@ export function getActiveCodexRun(sessionId: string) {
     return activeRuns.get(sessionId) ?? null
 }
 
+export async function readCodexSubagent(input: {
+    ownerId: string
+    sessionId: string
+    codexConnectionId: string | null
+    codexThreadId: string | null
+    threadId: string
+    cursor?: string
+}) {
+    const active = getActiveCodexRun(input.sessionId)
+    if (active?.client && active.threadId) {
+        return readSubagentHistory(active.client, active.threadId, input.threadId, getEventFromThreadItem, input.cursor)
+    }
+    if (!input.codexThreadId || !input.codexConnectionId) throw new CodexSubagentNotFoundError('Codex thread not found')
+    const client = await CodexAppServerClient.create(getCodexConnectionHome(input.ownerId, input.codexConnectionId))
+    try {
+        return await readSubagentHistory(client, input.codexThreadId, input.threadId, getEventFromThreadItem, input.cursor)
+    } finally {
+        client.close()
+    }
+}
+
 class CodexRunInterruptedError extends Error {
     constructor() {
         super('Codex turn was interrupted.')
@@ -240,6 +267,7 @@ export async function steerActiveCodexRun(input: {
     artifactFiles?: string[]
     attachments?: string[]
     responseAnnotations?: CodexResponseAnnotation[]
+    skillRefs?: CodexSkillReference[]
 }) {
     const activeRun = getActiveCodexRun(input.sessionId)
     if (!activeRun || activeRun.stopped || !activeRun.client || !activeRun.threadId || !activeRun.turnId) {
@@ -252,7 +280,7 @@ export async function steerActiveCodexRun(input: {
     }
 
     const imageItems = resolveCodexImageInputItems(input.attachments)
-    const prompt = prependCodexResponseAnnotations(appendCodexArtifactReferences(content, input.artifactFiles ?? []), input.responseAnnotations ?? [])
+    const prompt = prependCodexResponseAnnotations(appendCodexArtifactReferences(rewriteCodexSkillReferences(content, input.skillRefs ?? []), input.artifactFiles ?? []), input.responseAnnotations ?? [])
     const event: CodexRunEvent = {
         id: `codex_steer_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`,
         kind: 'steer',
@@ -268,7 +296,7 @@ export async function steerActiveCodexRun(input: {
     const response = await activeRun.client.request<{ turnId: string }>('turn/steer', {
         threadId: activeRun.threadId,
         expectedTurnId: activeRun.turnId,
-        input: [{ type: 'text', text: prompt, text_elements: [] }, ...imageItems],
+        input: [{ type: 'text', text: prompt, text_elements: [] }, ...imageItems, ...codexSkillInputItems(input.skillRefs)],
     })
     if (response && typeof response.turnId === 'string') {
         activeRun.turnId = response.turnId
@@ -350,13 +378,16 @@ export async function updateNovelCodexGoal(input: {
             orderBy: { createdAt: 'asc' },
         })
     if (!connection) throw new Error('No Codex connection is available.')
-    const codexHome = connection.providerType === 'custom'
-        ? await syncCodexConnectionRuntimeFiles(connection)
-        : await ensureCodexConnectionHome(input.ownerId, connection.id)
-    const client = await CodexAppServerClient.create(codexHome)
+    const codexHome = await syncCodexConnectionRuntimeFiles(connection)
+    const sessionConfig = {
+        ...await getCodexSessionSkillConfig(input.ownerId, input.sessionId),
+        ...getCodexOpenCodeGoConfig(connection, input.sessionId),
+    }
+    const client = await CodexAppServerClient.create(codexHome, undefined, sessionConfig)
     try {
         await client.request('thread/resume', {
             threadId: input.codexThreadId,
+            config: sessionConfig,
             excludeTurns: true,
         })
         if (input.clear) {
@@ -445,7 +476,7 @@ class CodexAppServerClient {
         onCreated?: (client: CodexAppServerClient) => void,
         configOverrides: Record<string, unknown> = {}
     ) {
-        const args = Object.entries(configOverrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])
+        const args = codexConfigOverrideArgs(configOverrides)
         const child = spawn('codex', [...args, 'app-server'], {
             env: {
                 ...globalThis.process.env,
@@ -629,10 +660,11 @@ type CodexPlanStep = {
     status: string
 }
 
+type CodexAssistantMessage = { id: string; content: string; createdAt: string }
+
 type CodexRunStreamHandlers = {
-    onTurnStarted?: (turnId: string) => void
     onTurnCompleted?: (turn: { turnId: string; status: 'completed' | 'failed' | 'interrupted' }) => void
-    onAssistantDelta?: (delta: string) => void
+    onAssistantDelta?: (event: { id: string; delta: string; createdAt: string }) => void
     onReasoningDelta?: (event: CodexReasoningDelta) => void
     onAssistantNotification?: (notification: { id: string; content: string; createdAt: string }) => void
     onPlanDelta?: (event: { id: string; delta: string; createdAt: string }) => void
@@ -1102,7 +1134,9 @@ async function tagSceneEditsWithSession(item: unknown, sessionId: string) {
     }
 }
 
-type CodexSkillInputItem = { type: 'skill'; name: string; path: string }
+function codexSkillInputItems(refs: CodexSkillReference[] = []) {
+    return refs.map(({ name, path }) => ({ type: 'skill' as const, name, path }))
+}
 
 async function resolveCodexCoreSkillsRoot(): Promise<string | null> {
     const relativePath = path.join('src', 'lib', 'server', 'codex-core', 'skills')
@@ -1137,46 +1171,6 @@ async function mountCodexCoreSkills(client: CodexAppServerClient) {
     }
 }
 
-/**
- * Resolve `{ id, name }` skill references into Codex `skill` input items. The canonical absolute
- * path is taken from `skills/list` (matched by the `/skills/<id>` segment of the synced symlink);
- * if the skill is not reported there we fall back to the expected `SKILL.md` path. Attaching the
- * item lets the server inject the full skill instructions without re-resolving the `$name` mention.
- */
-async function resolveCodexSkillInputItems(
-    client: CodexAppServerClient,
-    codexHome: string,
-    refs: Array<{ id: string; name: string }> | null | undefined
-): Promise<CodexSkillInputItem[]> {
-    if (!refs || refs.length === 0) return []
-
-    let metadata: Array<{ name: string; path: string }> = []
-    try {
-        const response = await client.request<{ data?: Array<{ skills?: Array<{ name?: string; path?: string }> }> }>(
-            'skills/list',
-            { forceReload: false }
-        )
-        metadata = (response?.data ?? [])
-            .flatMap((entry) => entry.skills ?? [])
-            .map((skill) => ({ name: String(skill.name ?? ''), path: String(skill.path ?? '') }))
-            .filter((skill) => skill.path)
-    } catch {
-        metadata = []
-    }
-
-    const items: CodexSkillInputItem[] = []
-    const seen = new Set<string>()
-    for (const ref of refs) {
-        const idMarker = `/skills/${ref.id}`
-        const match = metadata.find((skill) => skill.path.replaceAll(path.sep, '/').includes(idMarker))
-        const resolved = match ?? { name: ref.name, path: path.join(codexHome, 'skills', ref.id, 'SKILL.md') }
-        if (seen.has(resolved.path)) continue
-        seen.add(resolved.path)
-        items.push({ type: 'skill', name: resolved.name || ref.name, path: resolved.path })
-    }
-    return items
-}
-
 export async function runNovelCodexTurn(input: {
     activeRun: CodexRunReservation
     sessionId: string
@@ -1194,7 +1188,7 @@ export async function runNovelCodexTurn(input: {
     resumeGoal?: boolean
     prompt?: string
     imageUrls?: string[] | null
-    skillRefs?: Array<{ id: string; name: string }> | null
+    skillRefs?: CodexSkillReference[]
     stream?: CodexRunStreamHandlers
 }) {
     const activeRunHandle = input.activeRun
@@ -1236,9 +1230,7 @@ export async function runNovelCodexTurn(input: {
         throw new Error('No Codex connection is available.')
     }
 
-    const codexHome = connection.providerType === 'custom'
-        ? await syncCodexConnectionRuntimeFiles(connection)
-        : await ensureCodexConnectionHome(input.ownerId, connection.id)
+    const codexHome = await syncCodexConnectionRuntimeFiles(connection)
     const modelId = typeof input.modelId === 'string' && input.modelId.trim()
         ? input.modelId.trim()
         : connection.defaultModelId?.trim() || DEFAULT_CODEX_MODEL
@@ -1264,12 +1256,20 @@ export async function runNovelCodexTurn(input: {
         connectionId: connection.id,
         toolsApprovalMode: reviewLevel === 'user_review' ? 'prompt' : 'approve',
         reviewLevel,
+        deepSeekWebSearchConnectionId: connection.providerType === 'custom'
+            && connection.upstreamFormat === 'responses'
+            && isOfficialDeepSeekResponsesProvider(connection.upstreamFormat, connection.baseUrl)
+            ? connection.id : undefined,
     })
     throwIfCodexRunStopped(activeRunHandle)
+    const sessionConfig = {
+        ...await getCodexSessionSkillConfig(input.ownerId, input.sessionId),
+        ...getCodexOpenCodeGoConfig(connection, input.sessionId),
+    }
     client = await CodexAppServerClient.create(codexHome, (createdClient) => {
         client = createdClient
         activeRunHandle.client = createdClient
-    })
+    }, sessionConfig)
     throwIfCodexRunStopped(activeRunHandle)
     const { config: connectionConfig } = await client.request<{ config: Record<string, unknown> }>('config/read', { includeLayers: false })
     if (connection.providerType !== 'custom') {
@@ -1288,7 +1288,7 @@ export async function runNovelCodexTurn(input: {
         client = await CodexAppServerClient.create(codexHome, (createdClient) => {
             client = createdClient
             activeRunHandle.client = createdClient
-        }, questionPolicy.config)
+        }, { ...questionPolicy.config, ...sessionConfig })
     }
     const runClient = client
     await mountCodexCoreSkills(client)
@@ -1307,7 +1307,7 @@ export async function runNovelCodexTurn(input: {
     })
     let goal = normalizeCodexThreadGoal(input.currentGoal)
     let waitingForResumeActivation = input.resumeGoal === true
-    let assistantText = ''
+    const assistantMessages = new Map<string, CodexAssistantMessage>()
     let contextWindow: CodexContextWindow | null = null
     const eventOrder: string[] = []
     const eventsById = new Map<string, CodexRunEvent>()
@@ -1315,6 +1315,18 @@ export async function runNovelCodexTurn(input: {
     const commandOutputsById = new Map<string, string>()
     const eventCreatedAtById = new Map<string, string>()
     const asyncQuestionItems = new Set<string>()
+
+    const receiveAssistantText = (turnId: string, itemId: string, text: string, phase: 'delta' | 'completed') => {
+        if (!text) return
+        const id = `codex_assistant_${turnId}_${itemId}`
+        const message = assistantMessages.get(id) ?? { id, content: '', createdAt: new Date().toISOString() }
+        const update = phase === 'completed'
+            ? mergeCompletedAssistantText(message.content, text)
+            : { assistantText: message.content + text, delta: text }
+        message.content = update.assistantText
+        assistantMessages.set(id, message)
+        if (update.delta) input.stream?.onAssistantDelta?.({ id, delta: update.delta, createdAt: message.createdAt })
+    }
 
     const captureAsyncQuestion = async (item: Record<string, unknown>, questionTurnId: string) => {
         const request = createAsyncCodexUserInputRequest(input.sessionId, activeRunHandle.threadId!, questionTurnId, item)
@@ -1359,6 +1371,25 @@ export async function runNovelCodexTurn(input: {
         }
     }
 
+    const emitSubagent = (agent: CodexSubagent) => {
+        const id = `subagent:${agent.threadId}`
+        const previous = eventsById.get(id)
+        const subagent = { ...previous?.subagent, ...agent }
+        emitEvent({ id, kind: 'subagent', title: '', content: '', subagent, createdAt: previous?.createdAt ?? new Date().toISOString() })
+    }
+    const subagentMetadataReads = new Map<string, Promise<void>>()
+    const receiveSubagent = (agent: CodexSubagent) => {
+        emitSubagent(agent)
+        if (subagentMetadataReads.has(agent.threadId)) return
+        const read = runClient.request<{ thread: Parameters<typeof subagentFromNativeThread>[0] }>('thread/read', { threadId: agent.threadId })
+            .then(({ thread }) => {
+                const metadata = subagentFromNativeThread(thread)
+                emitSubagent({ threadId: agent.threadId, ...(metadata.name ? { name: metadata.name } : {}), ...(metadata.model ? { model: metadata.model } : {}) })
+            })
+            .catch(() => {})
+        subagentMetadataReads.set(agent.threadId, read)
+    }
+
     // Codex saves generated images (gpt-image) into the session workspace; copy each into
     // managed uploads and re-emit its event with the URL so it renders and survives as long
     // as the session does. Imports are awaited before the turn result is returned.
@@ -1396,6 +1427,7 @@ export async function runNovelCodexTurn(input: {
         const threadResponse = input.codexThreadId
             ? await client.request<{ thread: { id: string } }>('thread/resume', {
                 ...questionPolicy,
+                config: { ...questionPolicy.config, ...sessionConfig },
                 threadId: input.codexThreadId,
                 model: modelId,
                 serviceTier,
@@ -1408,6 +1440,7 @@ export async function runNovelCodexTurn(input: {
             })
             : await client.request<{ thread: { id: string } }>('thread/start', {
                 ...questionPolicy,
+                config: { ...questionPolicy.config, ...sessionConfig },
                 model: modelId,
                 serviceTier,
                 cwd: sessionWorkspacePath,
@@ -1520,7 +1553,7 @@ export async function runNovelCodexTurn(input: {
             })
         })
 
-        const skillInputItems = await resolveCodexSkillInputItems(client, codexHome, input.skillRefs)
+        const skillInputItems = codexSkillInputItems(input.skillRefs)
         throwIfCodexRunStopped(activeRunHandle)
         if (input.resumeGoal) {
             const response = await client.request<{ goal: unknown }>('thread/goal/set', {
@@ -1581,6 +1614,19 @@ export async function runNovelCodexTurn(input: {
                 if (activeRunHandle.stopped) return
                 const params = message.params as Record<string, unknown> | undefined
                 if (!params) return
+                if (message.method === 'thread/started') {
+                    const child = params.thread as Parameters<typeof subagentFromNativeThread>[0] | undefined
+                    if (child?.parentThreadId === threadId) emitSubagent(subagentFromNativeThread(child))
+                    return
+                }
+                if (typeof params.threadId === 'string' && params.threadId !== threadId && eventsById.has(`subagent:${params.threadId}`)) {
+                    if (message.method === 'turn/started') emitSubagent({ threadId: params.threadId, status: 'running' })
+                    if (message.method === 'turn/completed') {
+                        const turn = params.turn as { status?: string } | undefined
+                        const status = turn?.status === 'completed' ? 'completed' : turn?.status === 'failed' ? 'errored' : turn?.status === 'interrupted' ? 'interrupted' : undefined
+                        if (status) emitSubagent({ threadId: params.threadId, status })
+                    }
+                }
                 if (params.threadId && params.threadId !== threadId) return
                 const usage = consumeLiveCodexUsageNotification({
                     method: message.method,
@@ -1592,6 +1638,9 @@ export async function runNovelCodexTurn(input: {
                 if (usage.contextWindow) contextWindow = usage.contextWindow
                 if (usage.consumed) return
                 if (params.threadId !== threadId) return
+                if (message.method === 'item/started' || message.method === 'item/completed') {
+                    subagentsFromThreadItem(params.item).forEach(receiveSubagent)
+                }
 
                 if (message.method === 'serverRequest/resolved') {
                     clearCodexUserInputRequest(input.sessionId, String(params.requestId))
@@ -1624,7 +1673,6 @@ export async function runNovelCodexTurn(input: {
                     turnId = turn.id
                     activeRunHandle.turnId = turnId
                     turnInProgress = true
-                    input.stream?.onTurnStarted?.(turnId)
                     return
                 }
 
@@ -1637,10 +1685,9 @@ export async function runNovelCodexTurn(input: {
                     }
                 }
 
-                if (message.method === 'item/agentMessage/delta' && params.turnId === turnId) {
-                    if (typeof params.delta === 'string') {
-                        assistantText += params.delta
-                        input.stream?.onAssistantDelta?.(params.delta)
+                if (message.method === 'item/agentMessage/delta' && turnId && params.turnId === turnId) {
+                    if (typeof params.itemId === 'string' && typeof params.delta === 'string') {
+                        receiveAssistantText(turnId, params.itemId, params.delta, 'delta')
                     }
                     return
                 }
@@ -1745,10 +1792,9 @@ export async function runNovelCodexTurn(input: {
                     }
 
                     const completedText = getMessageTextFromThreadItem(item)
-                    if (completedText) {
-                        const reconciled = mergeCompletedAssistantText(assistantText, completedText)
-                        if (reconciled.delta) input.stream?.onAssistantDelta?.(reconciled.delta)
-                        assistantText = reconciled.assistantText
+                    const completedItemId = getThreadItemId(item)
+                    if (completedText && completedItemId) {
+                        receiveAssistantText(turnId, completedItemId, completedText, 'completed')
                     }
                     return
                 }
@@ -1793,6 +1839,7 @@ export async function runNovelCodexTurn(input: {
         if (!interrupted && pendingImageImports.length > 0) {
             await Promise.allSettled(pendingImageImports)
         }
+        if (!interrupted) await Promise.all(subagentMetadataReads.values())
 
         if (!interrupted && !contextWindow) {
             contextWindow = await readLatestContextWindowFromSessionLog(codexHome, threadId)
@@ -1810,7 +1857,7 @@ export async function runNovelCodexTurn(input: {
 
         return {
             threadId,
-            assistantText: assistantText.trim(),
+            assistantMessages: [...assistantMessages.values()],
             events: eventOrder.map((eventId) => eventsById.get(eventId)).filter((event): event is CodexRunEvent => event !== undefined),
             contextWindow,
             connectionId: connection.id,
@@ -1893,9 +1940,7 @@ export async function runNovelCodexCompaction(input: {
         throw new Error('No Codex connection is available.')
     }
 
-    const codexHome = connection.providerType === 'custom'
-        ? await syncCodexConnectionRuntimeFiles(connection)
-        : await ensureCodexConnectionHome(input.ownerId, connection.id)
+    const codexHome = await syncCodexConnectionRuntimeFiles(connection)
     const reviewLevel = normalizeCodexReviewLevel(input.reviewLevel) ?? DEFAULT_CODEX_REVIEW_LEVEL
     const reviewOptions = getCodexRuntimeReviewOptions(reviewLevel)
     const novelWorkspacePath = getNovelWorkspacePath(input.ownerId, input.novelId)
@@ -1904,10 +1949,14 @@ export async function runNovelCodexCompaction(input: {
         sessionWorkspacePath,
         novelWorkspacePath,
     })
+    const sessionConfig = {
+        ...await getCodexSessionSkillConfig(input.ownerId, input.sessionId),
+        ...getCodexOpenCodeGoConfig(connection, input.sessionId),
+    }
     client = await CodexAppServerClient.create(codexHome, (createdClient) => {
         client = createdClient
         activeRunHandle.client = createdClient
-    })
+    }, sessionConfig)
     const runClient = client
     throwIfCodexRunStopped(activeRunHandle)
     const modelId = typeof input.modelId === 'string' && input.modelId.trim()
@@ -1923,6 +1972,7 @@ export async function runNovelCodexCompaction(input: {
 
         const threadResponse = await client.request<{ thread: { id: string } }>('thread/resume', {
             threadId: input.codexThreadId,
+            config: sessionConfig,
             model: modelId,
             serviceTier,
             cwd: sessionWorkspacePath,

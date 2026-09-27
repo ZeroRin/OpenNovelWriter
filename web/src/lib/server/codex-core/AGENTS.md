@@ -19,9 +19,11 @@
 - 从全文查找场景、回忆前文或核对连续性 → `story-context-retrieval`
 - 维护或查询时序实体、事实、别名、Moment 与来源证据 → `story-state`
 
-调用工具时使用工作区投影中标注的 `novel_id`、`act_number`、`chapter_id`、`scene_id`、`term_id`。
+调用工具时使用工作区投影中标注的标识，或 `search_content` 返回的真实 ID 与结构化引用。
 
-`novel/chapters/` 下的文件**以 chapter_id 命名**（即 `novel/chapters/<chapter_id>.md`）。**不要在该目录里 `ls`/`find`/grep 乱翻找**——要定位某一章时，先读 `novel/outline.md`，按章名/卷找到对应的 `chapter_id`，再直接打开 `novel/chapters/<chapter_id>.md`。这样最快，也避免在大量章节文件里扫描。
+按标题查找内容或判断词条、章节等是否存在时，使用 `search_content`；`match: "exact"` 用于精确名称匹配，默认包含匹配用于查找候选，可用 `kinds` 限定类型。工具只检索名称，不检索正文或词条别名，并排除归档词条。结果包含 ID、定位信息、可用的会话相对路径与 `target`；文件路径为空不代表记录不存在。`hasMore` 为真时可增加 `offset` 继续取下一页。内容选择输入可直接使用结果的 `target`。
+
+`novel/chapters/` 下的文件**以 chapter_id 命名**（即 `novel/chapters/<chapter_id>.md`）。**不要在该目录里 `ls`/`find`/grep 乱翻找**——按章名用 `search_content` 定位，或先读 `novel/outline.md` 找到对应的 `chapter_id`，再打开具体章节文件。
 
 在回复时你需要遵守以下的规则：
 1. 详细分析应先在对话里完整回答。不要预先写用户看不到的 Markdown 文件；只有用户明确同意保存时，才按 `edit-snippets` 技能落库为片段。不要直接编辑 `novel/snippet.md` 或 `novel/snippets/` 中的投影文件。

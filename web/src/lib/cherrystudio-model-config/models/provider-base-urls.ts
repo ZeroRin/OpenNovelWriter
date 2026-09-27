@@ -1,5 +1,5 @@
 // Generated from CherryStudio provider-registry data.
-// Providers: b3b73ceeb452801e.
+// Providers: 2707d81b155c6c98.
 
 export const REGISTRY_PROVIDER_BASE_URLS: ReadonlyArray<readonly [string, string]> = [
   ["https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope"],
@@ -7,8 +7,8 @@ export const REGISTRY_PROVIDER_BASE_URLS: ReadonlyArray<readonly [string, string
   ["https://generativelanguage.googleapis.com", "gemini"],
   ["https://www.sophnet.com/api/open-apis/v1", "sophnet"],
   ["https://ark.cn-beijing.volces.com/api/v3", "doubao"],
-  ["https://developer.amd.com.cn/radeon/v1", "radeon-cloud"],
   ["https://open.bigmodel.cn/api/anthropic", "zhipu"],
+  ["https://developer.amd.com.cn/radeon/v1", "radeon-cloud"],
   ["https://api-inference.modelscope.cn/v1", "modelscope"],
   ["https://chatgpt.com/backend-api/codex", "openai-codex"],
   ["https://open.bigmodel.cn/api/paas/v4", "zhipu"],
@@ -24,6 +24,8 @@ export const REGISTRY_PROVIDER_BASE_URLS: ReadonlyArray<readonly [string, string
   ["https://ai-gateway.vercel.sh/v1/ai", "gateway"],
   ["https://api.ppinfra.com/v3/openai", "ppio"],
   ["https://api.moonshot.cn/anthropic", "moonshot"],
+  ["https://api.moonshot.ai/anthropic", "moonshot-global"],
+  ["https://tokendance.space/gateway", "tokendance"],
   ["https://integrate.api.nvidia.com", "nvidia"],
   ["https://tokenhub.tencentmaas.com", "tokenhub"],
   ["https://router.huggingface.co/v1", "huggingface"],
@@ -59,6 +61,7 @@ export const REGISTRY_PROVIDER_BASE_URLS: ReadonlyArray<readonly [string, string
   ["https://api.ocoolai.com", "ocoolai"],
   ["https://api.aiionly.com", "aionly"],
   ["https://api.moonshot.cn", "moonshot"],
+  ["https://api.moonshot.ai", "moonshot-global"],
   ["https://api.stepfun.com", "stepfun"],
   ["https://api.together.ai", "together"],
   ["https://api.qnaigc.com", "qiniu"],
@@ -69,6 +72,7 @@ export const REGISTRY_PROVIDER_BASE_URLS: ReadonlyArray<readonly [string, string
   ["https://www.dmxapi.cn", "dmxapi"],
   ["http://localhost:3000", "new-api"],
   ["http://localhost:1234", "lmstudio"],
+  ["http://localhost:8000", "omlx"],
   ["https://aihubmix.com", "aihubmix"],
   ["https://api.x.ai/v1", "grok"],
   ["https://api.jina.ai", "jina"],

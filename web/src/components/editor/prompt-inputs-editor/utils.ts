@@ -1,5 +1,4 @@
 import type {
-    ContentSelectionTarget,
     PromptCheckboxInputDefinition,
     PromptContentSelectionInputDefinition,
     PromptCustomInputDefinition,
@@ -31,31 +30,6 @@ export function isContentSelectionInput(input: PromptInputDefinition): input is 
 
 export function isCheckboxInput(input: PromptInputDefinition): input is PromptCheckboxInputDefinition {
     return input.type === 'checkbox'
-}
-
-export function selectionKey(target: ContentSelectionTarget) {
-    switch (target.kind) {
-        case 'full_novel':
-            return 'full_novel'
-        case 'act':
-            return `act:${target.actNumber}`
-        case 'chapter':
-            return `chapter:${target.chapterId}`
-        case 'act_outline':
-            return `act_outline:${target.actNumber}`
-        case 'chapter_outline':
-            return `chapter_outline:${target.chapterId}`
-        case 'scene':
-            return `scene:${target.sceneId}`
-        case 'snippet':
-            return `snippet:${target.snippetId}`
-        case 'term':
-            return `term:${target.termId}`
-        case 'label':
-            return `label:${target.labelId}`
-        case 'term_tag':
-            return `term_tag:${target.tag}`
-    }
 }
 
 export function isDefaultTermCategoryId(categoryId: string): categoryId is DefaultTermCategoryId {

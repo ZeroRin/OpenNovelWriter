@@ -116,5 +116,6 @@ export function buildOfficialDeepSeekCatalogEntry(model: CodexProviderModel, ind
     entry.supports_parallel_tool_calls = model.supportsParallelToolCalls
     entry.input_modalities = model.inputModalities
     entry.supports_search_tool = true
+    delete entry.web_search_tool_type
     return entry
 }

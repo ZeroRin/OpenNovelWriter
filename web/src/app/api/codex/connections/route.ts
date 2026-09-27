@@ -107,6 +107,7 @@ export async function POST(request: NextRequest) {
             authJson: typeof body?.authJson === 'string' ? body.authJson : getDefaultCodexAuthJson(providerType),
             configToml: typeof body?.configToml === 'string' ? body.configToml : getDefaultCodexConfig(providerType),
         })
+        await syncCodexConnectionRuntimeFiles(connection)
         const synced = await syncCodexConnectionAuthState({ connectionId: connection.id, ownerId: user.userId, codexHome: files.home })
         if (synced.isActive) {
             await syncConnectionAssets(synced)

@@ -31,23 +31,34 @@ for (const asyncQuestions of [true, false]) {
     })
 }
 
-test('custom Astra automatically exposes async questions and retains Code Mode when questions are disabled', async () => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'onw-question-policy-'))
-    try {
-        await writeCodexModelCatalog({ codexHome: directory, upstreamFormat: 'responses', models: [createDefaultCodexProviderModel('openai/gpt-6-astra')] })
-        const input = { modelId: 'openai/gpt-6-astra', codexHome: directory, workspace: directory, config: { model_catalog_json: CODEX_MODEL_CATALOG_FILE } }
-        const enabled = await prepareCodexQuestionPolicy({ ...input, enabled: true })
-        assert.equal(enabled.config['tools.experimental_request_user_input.enabled'], false)
-        assert.match(enabled.developerInstructions, /Use request_user_input_async/)
-        const disabled = await prepareCodexQuestionPolicy({ ...input, enabled: false })
-        const model = JSON.parse(await fs.readFile(String(disabled.config.model_catalog_json), 'utf8')).models[0]
-        assert.equal(model.tool_mode, 'code_mode_only')
-        assert.equal(model.shell_type, 'unified_exec')
-        assert.deepEqual(model.experimental_supported_tools, ['clock'])
-    } finally {
-        await fs.rm(directory, { recursive: true, force: true })
-    }
-})
+for (const modelId of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    test(`custom ${modelId} preserves its question capabilities and Code Mode`, async () => {
+        const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'onw-question-policy-'))
+        try {
+            const asyncQuestions = modelId.startsWith('gpt-6-')
+            const prefixedId = `openai/${modelId}`
+            await fs.writeFile(path.join(directory, 'models_cache.json'), JSON.stringify({ models: [{
+                slug: modelId, context_window: 500_000, input_modalities: ['text', 'image'],
+                default_reasoning_level: 'medium', supported_reasoning_levels: [{ effort: 'medium' }],
+                tool_mode: 'code_mode_only', shell_type: 'unified_exec',
+                experimental_supported_tools: asyncQuestions ? ['send_user_message_async', 'clock'] : [],
+            }] }))
+            await writeCodexModelCatalog({ codexHome: directory, upstreamFormat: 'responses', models: [createDefaultCodexProviderModel(prefixedId)] })
+            const input = { modelId: prefixedId, codexHome: directory, workspace: directory, config: { model_catalog_json: CODEX_MODEL_CATALOG_FILE } }
+            const enabled = await prepareCodexQuestionPolicy({ ...input, enabled: true })
+            assert.equal(enabled.config['tools.experimental_request_user_input.enabled'], !asyncQuestions)
+            assert.equal(enabled.config['features.default_mode_request_user_input'], !asyncQuestions)
+            assert.ok(enabled.developerInstructions.includes(asyncQuestions ? 'Use request_user_input_async' : 'Use request_user_input and wait'))
+            const disabled = await prepareCodexQuestionPolicy({ ...input, enabled: false })
+            const model = JSON.parse(await fs.readFile(String(disabled.config.model_catalog_json), 'utf8')).models[0]
+            assert.equal(model.tool_mode, 'code_mode_only')
+            assert.equal(model.shell_type, 'unified_exec')
+            assert.deepEqual(model.experimental_supported_tools, asyncQuestions ? ['clock'] : [])
+        } finally {
+            await fs.rm(directory, { recursive: true, force: true })
+        }
+    })
+}
 
 test('disabled questions filter the async capability without altering native model behavior or shared config', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'onw-question-policy-'))

@@ -1,6 +1,5 @@
 {
   "schema": "open-novel-writer/skill",
   "version": 1,
-  "category": "scene_action",
-  "prompt": null
+  "category": "scene_action"
 }

@@ -57,19 +57,22 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
         const content = normalizeString(body?.content)
         const planning = normalizeString(body?.planning)
         const updatedBy = normalizeUpdatedBy(body?.updatedBy)
-        const codexSessionId = normalizeString(body?.codexSessionId).trim() || null
-        const skillId = normalizeString(body?.skillId).trim() || null
+        const snapshot = typeof body?.promptSnapshotJson === 'string' ? body.promptSnapshotJson : undefined
+        const existing = await prisma.sceneContinuationDraft.findUnique({ where: { panelId } })
+        const scene = await prisma.scene.findFirst({ where: { id: sceneId, chapterId, chapter: { novelId } }, select: { id: true } })
+        if (!scene || (existing && (existing.sceneId !== sceneId || existing.novelId !== novelId))) return NextResponse.json({ detail: 'Invalid panel location' }, { status: 400 })
+        if (existing?.codexSessionId && snapshot !== undefined && snapshot !== existing.promptSnapshotJson) {
+            return NextResponse.json({ detail: 'The continuation configuration is locked after handoff to Codex.' }, { status: 409 })
+        }
 
         const draft = await prisma.sceneContinuationDraft.upsert({
             where: { panelId },
-            create: { panelId, novelId, sceneId, chapterId, codexSessionId, skillId, content, planning, updatedBy },
+            create: { panelId, novelId, sceneId, chapterId, content, planning, updatedBy, promptSnapshotJson: snapshot },
             update: {
                 content,
                 planning,
                 updatedBy,
-                // Keep the panel anchored to its scene/chapter; only set session/skill links when provided.
-                ...(codexSessionId ? { codexSessionId } : {}),
-                ...(skillId ? { skillId } : {}),
+                ...(snapshot !== undefined ? { promptSnapshotJson: snapshot } : {}),
             },
         })
 

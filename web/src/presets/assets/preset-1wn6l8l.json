@@ -5,19 +5,19 @@
     "presetId": "preset-1wn6l8l",
     "name": "预设-通用场景总结",
     "description": "简单的进行场景总结",
-    "revision": 1.4,
-    "exportedAt": "2026-07-18T06:14:42.212Z"
+    "revision": 1.5,
+    "exportedAt": "2026-09-24T21:56:59.309Z"
   },
   "bundle": {
     "schema": "open-novel-writer/prompt-bundle",
     "version": 1,
-    "exportedAt": "2026-07-18T06:14:42.212Z",
+    "exportedAt": "2026-09-24T21:56:59.309Z",
     "entryName": "预设-通用场景总结",
     "prompts": [
       {
         "name": "预设-通用场景总结",
         "category": "scene_action",
-        "description": null,
+        "description": "提炼当前场景正文中的关键情节，按目标字数和最大字数生成摘要。",
         "messages": [
           {
             "id": "5ad7c189-a20e-41f6-a11d-b204e31ae42f",
@@ -27,7 +27,7 @@
           {
             "id": "439e688b-4ad9-400c-8124-a9c8a68367ab",
             "role": "user",
-            "content": "对如下文本进行总结：\n<scene>\n\t{{ scene.text }}\n</scene>"
+            "content": "对如下文本进行总结：\n\n<scene>\n{{ scene.text }}\n</scene>"
           }
         ],
         "inputs": [

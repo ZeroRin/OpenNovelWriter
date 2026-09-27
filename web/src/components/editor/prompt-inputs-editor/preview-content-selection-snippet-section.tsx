@@ -12,7 +12,8 @@ import {
     DropdownMenuSubTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Ban, Search } from 'lucide-react'
-import { getSnippetDisplayTitle, htmlToText, selectionKey } from '@/components/editor/prompt-inputs-editor/utils'
+import { getSnippetDisplayTitle, htmlToText } from '@/components/editor/prompt-inputs-editor/utils'
+import { selectionKey } from '@/lib/prompt-inputs'
 import type { PreviewContentSelectionSectionProps } from '@/components/editor/prompt-inputs-editor/preview-content-selection-shared'
 
 export function PreviewContentSelectionSnippetSection({

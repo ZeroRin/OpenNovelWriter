@@ -9,6 +9,7 @@ import { steerActiveCodexRun } from '@/lib/server/codex-app-server'
 import { normalizeManagedAttachmentUrls } from '@/lib/server/storage'
 import { normalizeCodexString } from '@/lib/server/codex-session'
 import { normalizeCodexResponseAnnotations } from '@/lib/codex-response-annotations'
+import { CodexSkillUnavailableError, resolveCodexSessionSkillReferences } from '@/lib/server/codex-session-skills'
 
 interface RouteContext {
     params: Promise<unknown>
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         const id = await getRouteId(params)
         const existing = await prisma.codexSession.findFirst({
             where: { id, ownerId: user.userId },
-            select: { id: true, status: true },
+            select: { id: true, status: true, category: true },
         })
         if (!existing) return NextResponse.json({ detail: 'Codex session not found' }, { status: 404 })
         if (existing.status !== 'running') {
@@ -58,15 +59,23 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
             return NextResponse.json({ detail: 'Message content is required.' }, { status: 400 })
         }
 
+        const skillRefs = await resolveCodexSessionSkillReferences({
+            ownerId: user.userId, sessionCategory: existing.category, content, skillIds: body?.skillIds,
+        })
+
         await steerActiveCodexRun({
             sessionId: id,
             message: content,
             attachments: normalizeManagedAttachmentUrls(body?.attachments),
             responseAnnotations,
             artifactFiles,
+            skillRefs,
         })
         return NextResponse.json({ ok: true })
     } catch (error) {
+        if (error instanceof CodexSkillUnavailableError) {
+            return NextResponse.json({ detail: error.message }, { status: 400 })
+        }
         console.error('Steer Codex turn error:', error)
         return NextResponse.json({ detail: error instanceof Error ? error.message : 'Internal server error' }, { status: 409 })
     }

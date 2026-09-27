@@ -14,7 +14,6 @@ import {
 } from '@/lib/prompts'
 import { isPresetAuthoringEnabled } from '@/lib/preset-authoring'
 import { recordRevisionHistory, safeParseRevisionHistoryJson } from '@/lib/revision-history'
-import { listSkills } from '@/lib/server/skill-storage'
 import {
     getPromptPrimaryMessageContent,
     normalizeIncomingMessages,
@@ -446,20 +445,6 @@ async function prepareChangeSet(db: DbClient, ownerId: string, changeSet: unknow
         validateTemplateSyntax({ prompt, componentsByName, errors })
     }
 
-    const skills = await listSkills(ownerId)
-    for (const operation of operations) {
-        if (operation.action === 'create') continue
-        const record = recordsById.get(operation.id)
-        if (!record) continue
-        const nameChanged = operation.action === 'delete'
-            || toPromptNameKey(operation.prompt.name) !== toPromptNameKey(record.name)
-        if (!nameChanged) continue
-        const boundSkills = skills.filter((skill) => skill.prompt && toPromptNameKey(skill.prompt) === toPromptNameKey(record.name))
-        if (boundSkills.length > 0) {
-            errors.push(`Prompt "${record.name}" is bound by user skill(s): ${boundSkills.map((skill) => skill.name).join(', ')}. Update those skills first.`)
-        }
-    }
-
     const deletedIds = operations.filter((operation): operation is Extract<PlannedOperation, { action: 'delete' }> => operation.action === 'delete').map((operation) => operation.id)
     if (deletedIds.length > 0) {
         const [defaults, chatCounts] = await Promise.all([
@@ -598,16 +583,52 @@ function toExportPrompt(record: PromptRecord) {
     }
 }
 
-export async function buildPromptLibraryExport(ownerId: string) {
-    const [records, defaults, skills] = await Promise.all([
+export async function buildPromptExport(params: {
+    ownerId: string
+    source?: 'library' | 'builtin'
+    name?: string
+}) {
+    const { ownerId, name } = params
+    const source = params.source ?? 'library'
+    const [records, defaults] = source === 'library' ? await Promise.all([
         prisma.prompt.findMany({ where: { ownerId }, orderBy: [{ category: 'asc' }, { sortOrder: 'asc' }, { updatedAt: 'desc' }] }),
         prisma.promptDefault.findMany({ where: { ownerId } }),
-        listSkills(ownerId),
-    ])
-    const prompts = records.map(toExportPrompt)
-    const byName = new Map(prompts.map((prompt) => [toPromptNameKey(prompt.name), prompt]))
+    ]) : [[], []]
+    const allPrompts = records.map(toExportPrompt)
+    const byName = new Map(allPrompts.map((prompt) => [toPromptNameKey(prompt.name), prompt]))
+    let prompts = allPrompts
+    let entries = source === 'builtin' ? listBuiltinPromptPresetRegistryEntries() : []
+    let entry: { name: string; fileName: string } | null = null
+
+    if (name !== undefined) {
+        const nameKey = toPromptNameKey(name)
+        if (source === 'builtin') {
+            entries = entries.filter((item) => toPromptNameKey(item.summary.name) === nameKey)
+            if (entries.length === 0) {
+                return { ok: false as const, status: 404, detail: `No built-in prompt preset named "${name}" was found.` }
+            }
+            entry = { name: entries[0].summary.name, fileName: `examples/${entries[0].summary.presetId}.json` }
+        } else {
+            const root = byName.get(nameKey)
+            if (!root) {
+                return { ok: false as const, status: 404, detail: `No prompt named "${name}" was found in the user's library.` }
+            }
+            prompts = [root]
+            const visited = new Set([root.id])
+            for (const prompt of prompts) {
+                for (const includeName of extractIncludeNamesFromMessages(prompt.messages)) {
+                    const component = byName.get(toPromptNameKey(includeName))
+                    if (!component || component.category !== 'component' || visited.has(component.id)) continue
+                    visited.add(component.id)
+                    prompts.push(component)
+                }
+            }
+            entry = { name: root.name, fileName: `prompts/${root.id}.json` }
+        }
+    }
+
     const reverseIncludes = new Map<string, string[]>()
-    for (const prompt of prompts) {
+    for (const prompt of allPrompts) {
         for (const includeName of extractIncludeNamesFromMessages(prompt.messages)) {
             const key = toPromptNameKey(includeName)
             const list = reverseIncludes.get(key) ?? []
@@ -621,41 +642,44 @@ export async function buildPromptLibraryExport(ownerId: string) {
         list.push(selection.category)
         defaultByPromptId.set(selection.promptId, list)
     }
-    const skillsByPromptName = new Map<string, string[]>()
-    for (const skill of skills) {
-        if (!skill.prompt) continue
-        const list = skillsByPromptName.get(toPromptNameKey(skill.prompt)) ?? []
-        list.push(skill.name)
-        skillsByPromptName.set(toPromptNameKey(skill.prompt), list)
-    }
-
     const manifest = {
-        schema: 'open-novel-writer/prompt-library-snapshot',
+        schema: 'open-novel-writer/prompt-export',
         version: 1,
+        source,
+        entry,
         exportedAt: new Date().toISOString(),
         promptCount: prompts.length,
         prompts: prompts.map((prompt) => ({
             id: prompt.id,
             name: prompt.name,
             category: prompt.category,
+            description: prompt.description,
             fileName: `prompts/${prompt.id}.json`,
             includes: extractIncludeNamesFromMessages(prompt.messages),
             includedBy: reverseIncludes.get(toPromptNameKey(prompt.name)) ?? [],
-            boundSkills: skillsByPromptName.get(toPromptNameKey(prompt.name)) ?? [],
             defaultFor: defaultByPromptId.get(prompt.id) ?? [],
             sourcePresetId: prompt.sourcePresetId,
             updatedAt: prompt.updatedAt,
         })),
-        examples: listBuiltinPromptPresetRegistryEntries().map((entry) => ({
+        examples: entries.map((entry) => ({
             presetId: entry.summary.presetId,
             name: entry.summary.name,
+            description: entry.summary.description,
+            category: entry.summary.entryPromptCategory,
             entryPromptName: entry.summary.entryPromptName,
             fileName: `examples/${entry.summary.presetId}.json`,
         })),
     }
-    const examples = listBuiltinPromptPresetRegistryEntries().map((entry) => ({
+    const examples = entries.map((entry) => ({
         fileName: `${entry.summary.presetId}.json`,
         preset: entry.preset,
     }))
-    return { manifest, prompts, examples, unresolvedSkillBindings: skills.filter((skill) => skill.prompt && !byName.has(toPromptNameKey(skill.prompt))).map((skill) => ({ skill: skill.name, prompt: skill.prompt })) }
+    return {
+        ok: true as const,
+        data: {
+            manifest,
+            prompts,
+            examples,
+        },
+    }
 }

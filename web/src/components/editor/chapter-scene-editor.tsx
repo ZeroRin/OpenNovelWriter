@@ -1,13 +1,12 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, useImperativeHandle, type Ref } from 'react'
 import { useTranslations } from 'next-intl'
 import { NodeSelection } from 'prosemirror-state'
 import type { Editor } from '@tiptap/core'
 import {
     novelApi,
     promptApi,
-    skillApi,
     type ChapterWithScenes,
     type Novel,
     type NovelLabel,
@@ -23,7 +22,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { htmlToText } from '@/lib/html-to-text'
-import { AlertCircle, CheckCircle2, Clock3, Database, Loader2, MoreVertical, PenLine, Plus, Sparkles, Tag, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Clock3, Database, Loader2, MoreVertical, PenLine, Plus, Tag, X } from 'lucide-react'
 import type { TermEntry } from '@/components/editor/terms/types'
 import { getTermEntryColorClasses, getTermEntryColorId } from '@/components/editor/terms/term-entry-colors'
 import { findMentionedTermIds, type TermMentionMatcher } from '@/components/editor/terms/term-mentions-utils'
@@ -58,7 +57,12 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
+export interface ChapterSceneEditorHandle {
+    getProseText: () => string
+}
+
 interface ChapterSceneEditorProps {
+    ref?: Ref<ChapterSceneEditorHandle>
     stackInfoPanels: boolean
     novelId?: string
     chapterId: string
@@ -96,6 +100,7 @@ function SceneDivider() {
 }
 
 export function ChapterSceneEditor({
+    ref,
     stackInfoPanels,
     novelId,
     chapterId,
@@ -165,47 +170,17 @@ export function ChapterSceneEditor({
     const nextSceneOperationAutoRunKeyRef = useRef(1)
     const scenesRef = useRef(scenes)
 
-    const [continuationSkills, setContinuationSkills] = useState<Skill[]>([])
+    useImperativeHandle(ref, () => ({
+        getProseText: () => scenes
+            .map((scene) => htmlToText(localEdits[scene.id] ?? scene.content, { paragraphSeparator: '\n' }))
+            .filter((text) => text.trim())
+            .join('\n\n'),
+    }), [localEdits, scenes])
 
-    useEffect(() => {
-        let cancelled = false
-        const load = () => {
-            void skillApi
-                .list({ category: 'scene_continuation' })
-                .then((data) => {
-                    if (cancelled) return
-                    setContinuationSkills((data.skills ?? []).filter((skill) => skill.enabled))
-                })
-                .catch(() => {
-                    if (!cancelled) setContinuationSkills([])
-                })
-        }
-        load()
-        window.addEventListener(PROMPTS_CHANGED_EVENT, load)
-        return () => {
-            cancelled = true
-            window.removeEventListener(PROMPTS_CHANGED_EVENT, load)
-        }
-    }, [])
-
-    const editorCommandMenuItems = useMemo<EditorCommandMenuItem[]>(
-        () => [
-            {
-                id: 'scene_continuation',
-                section: 'AI',
-                title: tPrompts('categories.sceneContinuation'),
-                icon: <PenLine className="h-5 w-5 text-muted-foreground" />,
-            },
-            ...continuationSkills.map((skill) => ({
-                id: `skill:${skill.id}`,
-                section: 'Skills',
-                title: skill.name,
-                description: skill.description || undefined,
-                icon: <Sparkles className="h-5 w-5 text-muted-foreground" />,
-            })),
-        ],
-        [continuationSkills, tPrompts]
-    )
+    const editorCommandMenuItems = useMemo<EditorCommandMenuItem[]>(() => [{
+        id: 'scene_continuation', section: 'AI', title: tPrompts('categories.sceneContinuation'),
+        icon: <PenLine className="h-5 w-5 text-muted-foreground" />,
+    }], [tPrompts])
     const sceneEditorExtraExtensions = useMemo(() => [SceneContinuationNode], [])
 
     useEffect(() => {
@@ -758,8 +733,7 @@ export function ChapterSceneEditor({
                                     commandMenu={{
                                         items: editorCommandMenuItems,
                                         onSelect: (commandId, editor) => {
-                                            const skillId = commandId.startsWith('skill:') ? commandId.slice('skill:'.length) : ''
-                                            if (commandId !== 'scene_continuation' && !skillId) return
+                                            if (commandId !== 'scene_continuation') return
 
                                             editor
                                                 .chain()
@@ -767,7 +741,6 @@ export function ChapterSceneEditor({
                                                     type: 'sceneContinuation',
                                                     attrs: {
                                                         panelId: createSceneContinuationPanelId(),
-                                                        ...(skillId ? { skillId } : {}),
                                                     },
                                                 })
                                                 .run()

@@ -61,6 +61,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
                         content: message.content,
                         sentContent: message.sentContent,
                         fullRenderedContent: message.fullRenderedContent,
+                        renderStateJson: message.renderStateJson,
                         promptTokens: message.promptTokens,
                         completionTokens: message.completionTokens,
                         totalTokens: message.totalTokens,

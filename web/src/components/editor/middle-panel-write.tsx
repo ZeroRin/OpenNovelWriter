@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -22,7 +22,7 @@ import {
     Tag,
     X,
 } from 'lucide-react'
-import { ChapterSceneEditor } from '@/components/editor/chapter-scene-editor'
+import { ChapterSceneEditor, type ChapterSceneEditorHandle } from '@/components/editor/chapter-scene-editor'
 import {
     Chapter,
     ChapterWithScenes,
@@ -193,6 +193,7 @@ export function MiddlePanelWrite({
     const [summaryMentionPreview, setSummaryMentionPreview] = useState<{ termId: string; anchorEl: HTMLElement } | null>(null)
     const [retrievalStatus, setRetrievalStatus] = useState<RetrievalStatusResponse | null>(null)
     const [embeddingUpdatingSceneId, setEmbeddingUpdatingSceneId] = useState<string | null>(null)
+    const chapterEditorsRef = useRef(new Map<string, ChapterSceneEditorHandle>())
 
     const refreshRetrievalStatus = useCallback(async () => {
         if (!novelId) return
@@ -273,6 +274,20 @@ export function MiddlePanelWrite({
         return termEntriesById.get(summaryMentionPreview.termId) ?? null
     }, [summaryMentionPreview, termEntriesById])
 
+    const copyChapterToClipboard = async (chapter: ChapterWithScenes, target: 'title' | 'prose') => {
+        const text = target === 'title'
+            ? (editingChapterId === chapter.id
+                ? editingTitle.trim() || t('chapter.defaultTitle', { number: getGlobalChapterIndex(chapter.id) })
+                : chapter.title)
+            : chapterEditorsRef.current.get(chapter.id)?.getProseText() ?? ''
+        if (!text.trim()) return
+        try {
+            await navigator.clipboard.writeText(text)
+        } catch (error) {
+            console.error('Failed to copy chapter:', error)
+        }
+    }
+
     // Chapter content rendering for a single chapter
     const renderChapterContent = (chapter: ChapterWithScenes) => {
         const canDeleteDirectly = canDeleteChapterDirectly(chapter)
@@ -303,8 +318,8 @@ export function MiddlePanelWrite({
                                 <DropdownMenuItem onClick={() => onInsertChapter(chapter, 'before')}>{t('chapter.insertBefore')}</DropdownMenuItem>
                                 <DropdownMenuItem onClick={() => onInsertChapter(chapter, 'after')}>{t('chapter.insertAfter')}</DropdownMenuItem>
                                 <DropdownMenuSeparator />
-                                <DropdownMenuItem>{t('chapter.copyBeats')}</DropdownMenuItem>
-                                <DropdownMenuItem>{t('chapter.copyProse')}</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => void copyChapterToClipboard(chapter, 'title')}>{t('chapter.copyTitle')}</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => void copyChapterToClipboard(chapter, 'prose')}>{t('chapter.copyProse')}</DropdownMenuItem>
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem
                                     variant={canDeleteDirectly ? 'destructive' : 'default'}
@@ -341,8 +356,8 @@ export function MiddlePanelWrite({
                             <DropdownMenuItem onClick={() => onInsertChapter(chapter, 'before')}>{t('chapter.insertBefore')}</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => onInsertChapter(chapter, 'after')}>{t('chapter.insertAfter')}</DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem>{t('chapter.copyBeats')}</DropdownMenuItem>
-                            <DropdownMenuItem>{t('chapter.copyProse')}</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => void copyChapterToClipboard(chapter, 'title')}>{t('chapter.copyTitle')}</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => void copyChapterToClipboard(chapter, 'prose')}>{t('chapter.copyProse')}</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                                 variant={canDeleteDirectly ? 'destructive' : 'default'}
@@ -404,6 +419,13 @@ export function MiddlePanelWrite({
 
                     {/* Scene Editor - handles multiple scenes with dividers */}
                     <ChapterSceneEditor
+                        ref={(editor) => {
+                            if (editor) {
+                                chapterEditorsRef.current.set(chapter.id, editor)
+                            } else {
+                                chapterEditorsRef.current.delete(chapter.id)
+                            }
+                        }}
                         stackInfoPanels={stackInfoPanels}
                         novelId={novelId}
                         chapterId={chapter.id}

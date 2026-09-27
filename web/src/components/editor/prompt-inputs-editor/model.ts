@@ -1,5 +1,7 @@
 'use client'
 
+import { createPromptContentResolvers } from '@/lib/prompt-content-resolvers'
+
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import type {
@@ -15,6 +17,8 @@ import {
     createPromptContentSelectionInput,
     createPromptDropdownOption,
     createPromptInput,
+    renderPromptCustomInputValue,
+    indexPromptInputs,
 } from '@/lib/prompt-inputs'
 import type { PromptMessage } from '@/lib/prompts'
 import {
@@ -44,7 +48,8 @@ import {
     isCustomInput,
     sortOptionsAlpha,
 } from '@/components/editor/prompt-inputs-editor/utils'
-import { renderTermTemplateText, renderTermTemplateValue } from '@/lib/term-template'
+import { findRenderedTermIds, renderTermTemplateText, renderTermTemplateValue } from '@/lib/term-template'
+import { buildTermMentionMatcher, findMentionedTermIds } from '@/components/editor/terms/term-mentions-utils'
 import type {
     AllowedSettingsOpenState,
     ContentSelectionPreviewState,
@@ -55,22 +60,16 @@ import type {
 } from '@/components/editor/prompt-inputs-editor/types'
 import { type DragEndEvent, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
-import { countChatUserInputReferencesInText, extractStringArgCallsFromMessages } from '@/lib/prompt-template'
+import { collectIncludedComponentPrompts, extractStringArgCallsFromMessages } from '@/lib/prompt-template'
 import { buildNovelOutlineTexts } from '@/lib/novel-outline'
 import { NOVEL_OUTLINE_DATA_CHANGED_EVENT, type NovelOutlineDataChangedDetail } from '@/lib/novel-outline-events'
 import { NOVEL_SETTINGS_CHANGED_EVENT, type NovelSettingsChangedDetail } from '@/lib/novel-settings-events'
-import { renderPromptTemplateMessages, renderPromptTemplateText, type PromptTemplateRenderWarning } from '@/lib/prompt-template-render'
-import { getContentSelectionTemplateItems } from '@/lib/content-selection-template'
+import { renderPromptTemplateMessages, type PromptTemplateRenderOptions, type PromptTemplateRenderWarning } from '@/lib/prompt-template-render'
 import { findPreviousSceneContent } from '@/lib/scene-continuation'
 
 const EMPTY_OPTIONS: PromptDropdownOption[] = []
 const EMPTY_MESSAGES: PromptMessage[] = []
 const EMPTY_CHAPTERS: ChapterWithScenes[] = []
-
-type IncludedComponentPrompt = {
-    name: string
-    prompt: Prompt
-}
 
 type ImportedPromptInput = {
     input: PromptInputDefinition
@@ -175,59 +174,6 @@ function splitSceneHtmlBySceneContinuationPanelId(
     const tagEnd = closeIndex >= 0 ? closeIndex + closeTag.length : openEnd + 1
 
     return { beforeHtml: html.slice(0, tagStart), afterHtml: html.slice(tagEnd) }
-}
-
-function collectIncludedComponentPrompts(params: {
-    rootMessages: PromptMessage[]
-    resolveComponentByNameKey: (nameKey: string) => Prompt | null
-    maxDepth?: number
-}) {
-    const maxDepth = params.maxDepth ?? 5
-    const included: IncludedComponentPrompt[] = []
-    const invalidIncludes: string[] = []
-    const seen = new Set<string>()
-
-    const walk = (messages: PromptMessage[], depth: number, stack: string[]) => {
-        if (depth > maxDepth) return
-        const includeNames = extractStringArgCallsFromMessages(messages ?? EMPTY_MESSAGES, 'include')
-        if (includeNames.length === 0) return
-
-        for (const rawName of includeNames) {
-            const key = normalizeKey(rawName)
-            if (!key) continue
-
-            if (stack.includes(key)) {
-                invalidIncludes.push(rawName)
-                continue
-            }
-
-            const prompt = params.resolveComponentByNameKey(key)
-            if (!prompt) {
-                invalidIncludes.push(rawName)
-                continue
-            }
-
-            if (!seen.has(key)) {
-                seen.add(key)
-                included.push({ name: prompt.name, prompt })
-            }
-
-            walk(prompt.messages ?? EMPTY_MESSAGES, depth + 1, [...stack, key])
-        }
-    }
-
-    walk(params.rootMessages ?? EMPTY_MESSAGES, 0, [])
-
-    const invalidUnique: string[] = []
-    const invalidSeen = new Set<string>()
-    for (const raw of invalidIncludes) {
-        const key = normalizeKey(raw)
-        if (!key || invalidSeen.has(key)) continue
-        invalidSeen.add(key)
-        invalidUnique.push(raw.trim())
-    }
-
-    return { included, invalidIncludes: invalidUnique }
 }
 
 function safeGetLocalStorage(key: string): string | null {
@@ -350,15 +296,6 @@ function resolveNextState<T>(action: SetStateAction<T>, current: T): T {
     return typeof action === 'function' ? (action as (prev: T) => T)(current) : action
 }
 
-function splitPromptBlocks(text: string) {
-    return (text ?? '')
-        .replace(/\r\n?/g, '\n')
-        .split(/\n[ \t]*\n+/u)
-        .map((block) => block.trim())
-        .filter(Boolean)
-}
-
-
 export type InputsEditorProps = {
     inputDefinitions: PromptInputDefinition[]
     disabled: boolean
@@ -369,7 +306,7 @@ export type InputsEditorProps = {
     allPrompts?: Prompt[]
     novelId?: string
     chapters?: ChapterWithScenes[]
-    acts?: { number: number; title: string | null; summary?: string | null }[]
+    acts?: { number: number; title: string | null; summary?: string | null; labelIds?: string[] }[]
     sceneContinuationPanelId?: string | null
     previewStateStorageKey?: string | null
     persistedPreviewState?: PersistedInputsEditorPreviewState | null
@@ -380,6 +317,7 @@ export type InputsEditorProps = {
     chatUserInputTerms?: string[] | null
     chatHistoryText?: string | null
     chatHistoryTerms?: string[] | null
+    chatRenderOptions?: PromptTemplateRenderOptions['chat']
     onNavigateToPromptAdvanced?: ((params: { promptId: string; inputId?: string }) => void) | null
 }
 
@@ -411,6 +349,7 @@ export function useInputsEditorModel({
     chatUserInputTerms,
     chatHistoryText,
     chatHistoryTerms,
+    chatRenderOptions,
     onNavigateToPromptAdvanced,
 }: InputsEditorProps) {
     const locale = useLocale()
@@ -525,12 +464,13 @@ export function useInputsEditorModel({
     )
     const setCheckboxPreviewCheckedByInputId: Dispatch<SetStateAction<Record<string, boolean>>> = useCallback(
         (value) => {
+            if (disabled) return
             updatePreviewState((prev) => ({
                 ...prev,
                 checkboxPreviewCheckedByInputId: resolveNextState(value, prev.checkboxPreviewCheckedByInputId),
             }))
         },
-        [updatePreviewState]
+        [disabled, updatePreviewState]
     )
     const inputTypeStashRef = useRef<
         Record<
@@ -1348,12 +1288,13 @@ export function useInputsEditorModel({
 
     const handleUpdateCustomPreviewState = useCallback(
         (inputId: string, fallback: CustomPreviewState, updater: (prev: CustomPreviewState) => CustomPreviewState) => {
+            if (disabled) return
             setCustomPreviewStateByInputId((prev) => {
                 const current = prev[inputId] ?? fallback
                 return { ...prev, [inputId]: updater(current) }
             })
         },
-        [setCustomPreviewStateByInputId]
+        [disabled, setCustomPreviewStateByInputId]
     )
 
     const handleUpdateContentSelectionPreviewState = useCallback(
@@ -1362,12 +1303,13 @@ export function useInputsEditorModel({
             fallback: ContentSelectionPreviewState,
             updater: (prev: ContentSelectionPreviewState) => ContentSelectionPreviewState
         ) => {
+            if (disabled) return
             setContentSelectionPreviewStateByInputId((prev) => {
                 const current = prev[inputId] ?? fallback
                 return { ...prev, [inputId]: updater(current) }
             })
         },
-        [setContentSelectionPreviewStateByInputId]
+        [disabled, setContentSelectionPreviewStateByInputId]
     )
 
     const calledInputNames = useMemo(() => {
@@ -1392,19 +1334,10 @@ export function useInputsEditorModel({
 
         return result
     }, [includedComponents, messages])
-    const inputByNameKey = useMemo(() => {
-        const map = new Map<string, PromptInputDefinition>()
-        const add = (item: PromptInputDefinition) => {
-            const key = item.name.trim().toLowerCase()
-            if (!key) return
-            if (map.has(key)) return
-            map.set(key, item)
-        }
-
-        value.forEach(add)
-        importedInputs.forEach((item) => add(item.input))
-        return map
-    }, [importedInputs, value])
+    const inputByNameKey = useMemo(
+        () => indexPromptInputs([...value, ...importedInputs.map((item) => item.input)]),
+        [importedInputs, value]
+    )
 
     const previewInputs = useMemo(() => {
         if (calledInputNames.length === 0) return value
@@ -1676,7 +1609,7 @@ export function useInputsEditorModel({
     }, [acts, sortedChapters])
 
     const effectiveActsForOutline = useMemo(() => {
-        const map = new Map<number, { number: number; title: string | null; summary: string | null }>()
+        const map = new Map<number, { number: number; title: string | null; summary: string | null; labelIds: string[] }>()
         const sourceActs = novelId ? novelActs : []
 
         sourceActs.forEach((act) => {
@@ -1684,6 +1617,7 @@ export function useInputsEditorModel({
                 number: act.number,
                 title: act.title,
                 summary: act.summary,
+                labelIds: act.labelIds,
             })
         })
 
@@ -1693,6 +1627,7 @@ export function useInputsEditorModel({
                 number: act.number,
                 title: act.title ?? existing?.title ?? null,
                 summary: act.summary ?? existing?.summary ?? null,
+                labelIds: act.labelIds ?? existing?.labelIds ?? [],
             })
         })
 
@@ -1831,12 +1766,14 @@ export function useInputsEditorModel({
     }, [termEntries, termTagPickerQuery])
 
     const termEntriesById = useMemo(() => new Map(termEntries.map((entry) => [entry.id, entry])), [termEntries])
+    const termMentionMatcher = useMemo(() => buildTermMentionMatcher(termEntries), [termEntries])
     const labelPickerById = useMemo(() => new Map(labelPickerLabels.map((label) => [label.id, label])), [labelPickerLabels])
     const contentSelectionTemplateResources = useMemo(
         () => ({
             acts: sortedActs.map((act) => ({
                 number: act.number,
                 title: act.title ?? null,
+                labelIds: effectiveActsForOutline.find((item) => item.number === act.number)?.labelIds ?? [],
                 summary:
                     effectiveActsForOutline.find((item) => item.number === act.number)?.summary ??
                     null,
@@ -1851,6 +1788,7 @@ export function useInputsEditorModel({
                     order: scene.order,
                     summary: scene.summary ?? null,
                     content: scene.content ?? '',
+                    labelIds: scene.labelIds,
                 })),
             })),
             chaptersById: new Map(
@@ -1866,6 +1804,7 @@ export function useInputsEditorModel({
                             order: scene.order,
                             summary: scene.summary ?? null,
                             content: scene.content ?? '',
+                            labelIds: scene.labelIds,
                         })),
                     },
                 ])
@@ -1879,6 +1818,7 @@ export function useInputsEditorModel({
                             order: scene.order,
                             summary: scene.summary ?? null,
                             content: scene.content ?? '',
+                            labelIds: scene.labelIds,
                         },
                     ] as const)
                 )
@@ -1929,6 +1869,55 @@ export function useInputsEditorModel({
         ]
     )
 
+    const resolveTermText = useCallback(
+        (termId: string) => {
+            const id = (termId ?? '').trim()
+            if (!id) return null
+            const entry = termEntriesById.get(id) ?? null
+            const rendered = renderTermTemplateText(entry)
+            return rendered || null
+        },
+        [termEntriesById]
+    )
+
+    const resolveTermValue = useCallback(
+        (termId: string) => {
+            const id = (termId ?? '').trim()
+            if (!id) return null
+            const entry = termEntriesById.get(id) ?? null
+            const rendered = renderTermTemplateValue({
+                entry,
+                termsById: termEntriesById,
+                includeRelations: novelTermContextIncludesRelations,
+                includeExperiences: novelTermContextIncludesExperiences,
+                locale,
+                customCategories: termEntriesMeta?.customCategories,
+            })
+            return rendered || null
+        },
+        [
+            locale,
+            novelTermContextIncludesExperiences,
+            novelTermContextIncludesRelations,
+            termEntriesById,
+            termEntriesMeta?.customCategories,
+        ]
+    )
+
+    const contentResolvers = useMemo(() => createPromptContentResolvers({
+        getInput: (name) => {
+            const input = inputByNameKey.get(normalizeKey(name))
+            return input?.type === 'content_selection'
+                ? { input, selections: contentSelectionPreviewStateByInputId[input.id]?.selections ?? [] }
+                : null
+        },
+        resources: contentSelectionTemplateResources,
+        termsById: termEntriesById,
+        snippets: snippetPickerSnippets,
+        resolveTermValue,
+        locale,
+    }), [inputByNameKey, contentSelectionPreviewStateByInputId, contentSelectionTemplateResources, termEntriesById, snippetPickerSnippets, resolveTermValue, locale])
+
     const buildInputPreviewValue = useCallback(
         (input: PromptInputDefinition): string => {
             if (input.type === 'checkbox') {
@@ -1939,99 +1928,12 @@ export function useInputsEditorModel({
 
             if (input.type === 'custom') {
                 const state = customPreviewStateByInputId[input.id] ?? input.custom.defaultContent
-                const allowMultiple = input.custom.dropdown.allowMultiple
-                const selectedIds = allowMultiple ? state.dropdownOptionIds : state.dropdownOptionIds.slice(0, 1)
-                const options = input.custom.dropdown.options ?? EMPTY_OPTIONS
-
-                const optionParts = selectedIds
-                    .map((id) => options.find((opt) => opt.id === id) ?? null)
-                    .filter((opt): opt is PromptDropdownOption => opt !== null)
-                    .map((opt) => (opt.content?.trim() ? opt.content.trim() : opt.label.trim()))
-                    .filter(Boolean)
-
-                const textPart = state.text?.trim() ?? ''
-                const parts = [...optionParts, textPart].filter((part) => part.trim())
-                return parts.join('\n\n').trim()
+                return renderPromptCustomInputValue(input, state)
             }
 
-            if (input.type !== 'content_selection') return ''
-
-            const state = contentSelectionPreviewStateByInputId[input.id] ?? {
-                selections: [],
-            }
-
-            const selections = Array.isArray(state.selections) ? state.selections : []
-            if (selections.length === 0) return ''
-
-            const parts: string[] = []
-            const structureKinds: Array<'fullNovel' | 'act' | 'chapter' | 'scene'> = ['fullNovel', 'act', 'chapter', 'scene']
-            for (const kind of structureKinds) {
-                const items = getContentSelectionTemplateItems({
-                    kind,
-                    input,
-                    selections,
-                    resources: contentSelectionTemplateResources,
-                    locale,
-                })
-                parts.push(...items.map((item) => item.value).filter(Boolean))
-            }
-
-            for (const selection of selections) {
-                if (selection.kind === 'scene' || selection.kind === 'chapter' || selection.kind === 'act' || selection.kind === 'full_novel') {
-                    continue
-                }
-
-                if (selection.kind === 'snippet') {
-                    const snippet = snippetPickerSnippets.find((item) => item.id === selection.snippetId) ?? null
-                    const rendered = snippet
-                        ? htmlToText(snippet.content ?? '', { paragraphSeparator: '\n' }).trim()
-                        : ''
-                    if (rendered) parts.push(rendered)
-                    continue
-                }
-
-                if (selection.kind === 'term') {
-                    const entry = termEntriesById.get(selection.termId) ?? null
-                    if (!entry) continue
-                    const rendered = [
-                        entry.title?.trim(),
-                        entry.subtitle?.trim(),
-                        entry.description?.trim(),
-                        entry.researchNotes?.trim(),
-                    ]
-                        .filter(Boolean)
-                        .join('\n')
-                        .trim()
-                    if (rendered) parts.push(rendered)
-                    continue
-                }
-
-                if (selection.kind === 'label') {
-                    const label = labelPickerById.get(selection.labelId) ?? null
-                    const rendered = label?.name?.trim() ?? ''
-                    if (rendered) parts.push(rendered)
-                    continue
-                }
-
-                if (selection.kind === 'term_tag') {
-                    const rendered = selection.tag?.trim() ?? ''
-                    if (rendered) parts.push(rendered)
-                    continue
-                }
-            }
-
-            return parts.join('\n\n').trim()
+            return contentResolvers.resolveValue(input.name)
         },
-        [
-            checkboxPreviewCheckedByInputId,
-            contentSelectionPreviewStateByInputId,
-            contentSelectionTemplateResources,
-            customPreviewStateByInputId,
-            labelPickerById,
-            snippetPickerSnippets,
-            termEntriesById,
-            locale,
-        ]
+        [checkboxPreviewCheckedByInputId, customPreviewStateByInputId, contentResolvers]
     )
 
     const inputValues = useMemo<InputsEditorValueMap>(() => {
@@ -2073,6 +1975,7 @@ export function useInputsEditorModel({
     }, [checkboxPreviewCheckedByInputId, contentSelectionPreviewStateByInputId, customPreviewStateByInputId, value])
 
     const missingRequiredInputNames = useMemo(() => {
+        if (calledInputNames.length === 0) return []
         const missing: string[] = []
         const seen = new Set<string>()
         for (const input of previewInputs) {
@@ -2085,7 +1988,7 @@ export function useInputsEditorModel({
             missing.push(name)
         }
         return missing
-    }, [buildInputPreviewValue, previewInputs, t])
+    }, [buildInputPreviewValue, calledInputNames.length, previewInputs, t])
 
     const resolveInputValue = useCallback(
         (name: string) => {
@@ -2098,181 +2001,9 @@ export function useInputsEditorModel({
         [buildInputPreviewValue, inputByNameKey]
     )
 
-    const termIdsByTagKey = useMemo(() => {
-        const map = new Map<string, string[]>()
-        const normalize = (raw: string) => raw.trim().toLocaleLowerCase()
-
-        for (const entry of termEntries) {
-            if (entry.archived) continue
-            for (const rawTag of entry.tags ?? []) {
-                const key = normalize(rawTag)
-                if (!key) continue
-                const list = map.get(key) ?? []
-                list.push(entry.id)
-                map.set(key, list)
-            }
-        }
-
-        // Keep deterministic order for stable renders.
-        for (const [key, ids] of map.entries()) {
-            const sorted = ids
-                .slice()
-                .sort((a, b) => {
-                    const aTitle = termEntriesById.get(a)?.title ?? a
-                    const bTitle = termEntriesById.get(b)?.title ?? b
-                    return aTitle.localeCompare(bTitle, undefined, { sensitivity: 'base' })
-                })
-            map.set(key, sorted)
-        }
-
-        return map
-    }, [termEntries, termEntriesById])
-
-    const resolveInputTermIds = useCallback(
-        (name: string) => {
-            const key = normalizeKey(name)
-            if (!key) return null
-            const input = inputByNameKey.get(key) ?? null
-            if (!input) return null
-            if (input.type !== 'content_selection') return []
-
-            const state = contentSelectionPreviewStateByInputId[input.id] ?? { selections: [] }
-            const selections = Array.isArray(state.selections) ? state.selections : []
-
-            const out: string[] = []
-            const seen = new Set<string>()
-            for (const selection of selections) {
-                if (selection.kind !== 'term') continue
-                const id = (selection.termId ?? '').trim()
-                const entry = id ? termEntriesById.get(id) ?? null : null
-                if (!entry || entry.archived) continue
-                if (seen.has(id)) continue
-                seen.add(id)
-                out.push(id)
-            }
-            return out
-        },
-        [contentSelectionPreviewStateByInputId, inputByNameKey, termEntriesById]
-    )
-
-    const resolveInputTermTagTermIds = useCallback(
-        (name: string) => {
-            const key = normalizeKey(name)
-            if (!key) return null
-            const input = inputByNameKey.get(key) ?? null
-            if (!input) return null
-            if (input.type !== 'content_selection') return []
-
-            const state = contentSelectionPreviewStateByInputId[input.id] ?? { selections: [] }
-            const selections = Array.isArray(state.selections) ? state.selections : []
-            const normalize = (raw: string) => raw.trim().toLocaleLowerCase()
-
-            const out: string[] = []
-            const seen = new Set<string>()
-
-            for (const selection of selections) {
-                if (selection.kind !== 'term_tag') continue
-                const tagKey = normalize(selection.tag ?? '')
-                if (!tagKey) continue
-                const ids = termIdsByTagKey.get(tagKey) ?? []
-                for (const id of ids) {
-                    if (seen.has(id)) continue
-                    seen.add(id)
-                    out.push(id)
-                }
-            }
-
-            return out
-        },
-        [contentSelectionPreviewStateByInputId, inputByNameKey, termIdsByTagKey]
-    )
-
-    const resolveInputSnippets = useCallback(
-        (name: string) => {
-            const key = normalizeKey(name)
-            if (!key) return null
-            const input = inputByNameKey.get(key) ?? null
-            if (!input) return null
-            if (input.type !== 'content_selection') return []
-
-            const state = contentSelectionPreviewStateByInputId[input.id] ?? { selections: [] }
-            const selections = Array.isArray(state.selections) ? state.selections : []
-            const out: Array<{ text: string; value: string }> = []
-            const seen = new Set<string>()
-
-            for (const selection of selections) {
-                if (selection.kind !== 'snippet') continue
-                const id = (selection.snippetId ?? '').trim()
-                if (!id || seen.has(id)) continue
-
-                const snippet = snippetPickerSnippets.find((item) => item.id === id) ?? null
-                if (!snippet) continue
-
-                seen.add(id)
-                const value = htmlToText(snippet.content ?? '', { paragraphSeparator: '\n' }).trim()
-                const text = snippet.title?.trim() || value.split('\n')[0]?.trim() || ''
-                if (!text && !value) continue
-                out.push({ text, value })
-            }
-
-            return out
-        },
-        [contentSelectionPreviewStateByInputId, inputByNameKey, snippetPickerSnippets]
-    )
-
-    const resolveInputContentSelectionItems = useCallback(
-        (name: string, kind: 'fullNovel' | 'act' | 'chapter' | 'scene' | 'actOutline' | 'chapterOutline') => {
-            const key = normalizeKey(name)
-            if (!key) return null
-            const input = inputByNameKey.get(key) ?? null
-            if (!input || input.type !== 'content_selection') return []
-
-            const state = contentSelectionPreviewStateByInputId[input.id] ?? { selections: [] }
-            const selections = Array.isArray(state.selections) ? state.selections : []
-            return getContentSelectionTemplateItems({
-                kind,
-                input,
-                selections,
-                resources: contentSelectionTemplateResources,
-                locale,
-            })
-        },
-        [contentSelectionPreviewStateByInputId, contentSelectionTemplateResources, inputByNameKey, locale]
-    )
-
-    const resolveTermText = useCallback(
-        (termId: string) => {
-            const id = (termId ?? '').trim()
-            if (!id) return null
-            const entry = termEntriesById.get(id) ?? null
-            const rendered = renderTermTemplateText(entry)
-            return rendered || null
-        },
-        [termEntriesById]
-    )
-
-    const resolveTermValue = useCallback(
-        (termId: string) => {
-            const id = (termId ?? '').trim()
-            if (!id) return null
-            const entry = termEntriesById.get(id) ?? null
-            const rendered = renderTermTemplateValue({
-                entry,
-                termsById: termEntriesById,
-                includeRelations: novelTermContextIncludesRelations,
-                includeExperiences: novelTermContextIncludesExperiences,
-                locale,
-                customCategories: termEntriesMeta?.customCategories,
-            })
-            return rendered || null
-        },
-        [
-            locale,
-            novelTermContextIncludesExperiences,
-            novelTermContextIncludesRelations,
-            termEntriesById,
-            termEntriesMeta?.customCategories,
-        ]
+    const resolveTextTermIds = useCallback(
+        (text: string) => [...findMentionedTermIds(text, termMentionMatcher)],
+        [termMentionMatcher]
     )
 
     const resolveIncludeContent = useCallback(
@@ -2287,108 +2018,51 @@ export function useInputsEditorModel({
         [componentPromptsByNameKey, promptId]
     )
 
-    const renderedChatUserInputBlock = useMemo(() => {
-        if (isComponentPrompt) return ''
-        const lastMessage = (messages ?? EMPTY_MESSAGES)[(messages ?? EMPTY_MESSAGES).length - 1] ?? null
-        if (!lastMessage) return ''
-        const block = splitPromptBlocks(lastMessage.content ?? '').find(
-            (item) => countChatUserInputReferencesInText(item) > 0
-        )
-        if (!block) return ''
-
-        const rendered = renderPromptTemplateText({
-            text: block,
-            context: templateContext,
-            resolvers: {
-                resolveInput: resolveInputValue,
-                resolveInclude: resolveIncludeContent,
-                resolveInputTermIds,
-                resolveInputTermTagTermIds,
-                resolveInputSnippets,
-                resolveInputFullNovels: (name) => resolveInputContentSelectionItems(name, 'fullNovel'),
-                resolveInputActs: (name) => resolveInputContentSelectionItems(name, 'act'),
-                resolveInputChapters: (name) => resolveInputContentSelectionItems(name, 'chapter'),
-                resolveInputScenes: (name) => resolveInputContentSelectionItems(name, 'scene'),
-                resolveInputActOutlines: (name) => resolveInputContentSelectionItems(name, 'actOutline'),
-                resolveInputChapterOutlines: (name) => resolveInputContentSelectionItems(name, 'chapterOutline'),
-                resolveTermText,
-                resolveTermValue,
-            },
-        })
-        return rendered.text.trim()
-    }, [
-        isComponentPrompt,
-        messages,
-        resolveIncludeContent,
-        resolveInputTermIds,
-        resolveInputTermTagTermIds,
-        resolveInputSnippets,
-        resolveInputContentSelectionItems,
-        resolveInputValue,
-        resolveTermText,
-        resolveTermValue,
-        templateContext,
-    ])
-
-    const renderedMessages = useMemo(() => {
-        if (isComponentPrompt) return [] as Array<{ id: string; role: PromptMessage['role']; content: string }>
+    const renderedResult = useMemo(() => {
+        if (isComponentPrompt) return { texts: [], warnings: [], renderedTermIds: [] as string[] }
         const sourceMessages = messages ?? EMPTY_MESSAGES
-        const rendered = renderPromptTemplateMessages({
+        const termValues = new Map<string, string>()
+        const result = renderPromptTemplateMessages({
+            options: { chat: chatRenderOptions },
             texts: sourceMessages.map((message) => message.content ?? ''),
             context: templateContext,
             resolvers: {
                 resolveInput: resolveInputValue,
                 resolveInclude: resolveIncludeContent,
-                resolveInputTermIds,
-                resolveInputTermTagTermIds,
-                resolveInputSnippets,
-                resolveInputFullNovels: (name) => resolveInputContentSelectionItems(name, 'fullNovel'),
-                resolveInputActs: (name) => resolveInputContentSelectionItems(name, 'act'),
-                resolveInputChapters: (name) => resolveInputContentSelectionItems(name, 'chapter'),
-                resolveInputScenes: (name) => resolveInputContentSelectionItems(name, 'scene'),
-                resolveInputActOutlines: (name) => resolveInputContentSelectionItems(name, 'actOutline'),
-                resolveInputChapterOutlines: (name) => resolveInputContentSelectionItems(name, 'chapterOutline'),
+                ...contentResolvers.resolvers,
+                resolveTextTermIds,
                 resolveTermText,
-                resolveTermValue,
+                resolveTermValue: (id) => {
+                    const text = resolveTermValue(id)
+                    if (text) termValues.set(id, text)
+                    return text
+                },
             },
         })
-        return sourceMessages.map((message, index) => ({ id: message.id, role: message.role, content: rendered.texts[index] ?? '' }))
+        return { ...result, renderedTermIds: findRenderedTermIds(result.texts, termValues) }
     }, [
+        chatRenderOptions,
         isComponentPrompt,
         messages,
         resolveIncludeContent,
-        resolveInputTermIds,
-        resolveInputTermTagTermIds,
-        resolveInputSnippets,
-        resolveInputContentSelectionItems,
         resolveInputValue,
+        contentResolvers,
         resolveTermText,
+        resolveTextTermIds,
         resolveTermValue,
         templateContext,
     ])
 
+    const renderedMessages = useMemo(() => (messages ?? EMPTY_MESSAGES).map((message, index) => ({
+        id: message.id, role: message.role, content: renderedResult.texts[index] ?? '',
+    })), [messages, renderedResult])
+
+    const renderedTermEntries = useMemo(() => renderedResult.renderedTermIds
+        .flatMap((id) => { const entry = termEntriesById.get(id); return entry ? [entry] : [] })
+        .sort((a, b) => a.title.localeCompare(b.title, locale, { sensitivity: 'base' })), [renderedResult.renderedTermIds, termEntriesById, locale])
+
     const renderedWarnings = useMemo(() => {
-        if (isComponentPrompt) return [] as PromptTemplateRenderWarning[]
-        const rendered = renderPromptTemplateMessages({
-            texts: (messages ?? EMPTY_MESSAGES).map((message) => message.content ?? ''),
-            context: templateContext,
-            resolvers: {
-                resolveInput: resolveInputValue,
-                resolveInclude: resolveIncludeContent,
-                resolveInputTermIds,
-                resolveInputTermTagTermIds,
-                resolveInputSnippets,
-                resolveInputFullNovels: (name) => resolveInputContentSelectionItems(name, 'fullNovel'),
-                resolveInputActs: (name) => resolveInputContentSelectionItems(name, 'act'),
-                resolveInputChapters: (name) => resolveInputContentSelectionItems(name, 'chapter'),
-                resolveInputScenes: (name) => resolveInputContentSelectionItems(name, 'scene'),
-                resolveInputActOutlines: (name) => resolveInputContentSelectionItems(name, 'actOutline'),
-                resolveInputChapterOutlines: (name) => resolveInputContentSelectionItems(name, 'chapterOutline'),
-                resolveTermText,
-                resolveTermValue,
-            },
-        })
-        const all = rendered.warnings
+        const all = renderedResult.warnings
         const unique: PromptTemplateRenderWarning[] = []
         const seen = new Set<string>()
         for (const warning of all) {
@@ -2398,19 +2072,7 @@ export function useInputsEditorModel({
             unique.push(warning)
         }
         return unique
-    }, [
-        isComponentPrompt,
-        messages,
-        resolveIncludeContent,
-        resolveInputTermIds,
-        resolveInputTermTagTermIds,
-        resolveInputSnippets,
-        resolveInputContentSelectionItems,
-        resolveInputValue,
-        resolveTermText,
-        resolveTermValue,
-        templateContext,
-    ])
+    }, [renderedResult])
 
     const defaultContent = customInput?.custom.defaultContent ?? { dropdownOptionIds: [], text: '' }
     const customAllowMultiple = customInput?.custom.dropdown.allowMultiple ?? true
@@ -2520,8 +2182,9 @@ export function useInputsEditorModel({
         setPreviewSceneId,
         previewInputs,
         renderedMessages,
+        renderedTermEntries,
         renderedWarnings,
-        renderedChatUserInputBlock,
+        renderedChatState: renderedResult.chatState,
         selectInput,
         selectedInput,
         selectedInputId,

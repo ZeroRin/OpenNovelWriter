@@ -136,7 +136,7 @@ model SceneContinuationDraft {
   sceneId        String
   chapterId      String
   codexSessionId String?
-  skillId        String?
+  promptSnapshotJson String?
   content        String   @default("")
   planning       String   @default("")
   updatedBy      String   @default("user") // user | model | codex
@@ -637,6 +637,7 @@ model EditorChatMessage {
   content             String   @default("")
   sentContent         String?
   fullRenderedContent String?
+  renderStateJson     String?
   promptTokens        Int?
   completionTokens    Int?
   totalTokens         Int?
@@ -650,6 +651,7 @@ model EditorChatMessage {
 }
 
 model CodexSession {
+  continuationPanelId String?
   id                  String   @id @default(cuid())
   category            String
   title               String?

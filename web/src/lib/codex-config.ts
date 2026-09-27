@@ -86,71 +86,6 @@ export const DEFAULT_CODEX_SCENE_SETTINGS = {
 }
 export const DEFAULT_CODEX_CONTEXT_WINDOW = 300_000
 
-export const CODEX_NATIVE_PROVIDER_MODELS: CodexProviderModel[] = [
-    {
-        id: 'gpt-6-astra',
-        displayName: 'GPT-6 Astra',
-        contextWindow: DEFAULT_CODEX_CONTEXT_WINDOW,
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        defaultReasoningEffort: 'medium',
-        supportsParallelToolCalls: true,
-        inputModalities: ['text', 'image'],
-    },
-    {
-        id: 'gpt-5.6-sol',
-        displayName: 'GPT-5.6 Sol',
-        contextWindow: DEFAULT_CODEX_CONTEXT_WINDOW,
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        defaultReasoningEffort: 'low',
-        supportsParallelToolCalls: true,
-        inputModalities: ['text', 'image'],
-    },
-    {
-        id: 'gpt-5.6-terra',
-        displayName: 'GPT-5.6 Terra',
-        contextWindow: DEFAULT_CODEX_CONTEXT_WINDOW,
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        defaultReasoningEffort: 'medium',
-        supportsParallelToolCalls: true,
-        inputModalities: ['text', 'image'],
-    },
-    {
-        id: 'gpt-5.6-luna',
-        displayName: 'GPT-5.6 Luna',
-        contextWindow: DEFAULT_CODEX_CONTEXT_WINDOW,
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-        defaultReasoningEffort: 'medium',
-        supportsParallelToolCalls: true,
-        inputModalities: ['text', 'image'],
-    },
-    {
-        id: 'gpt-5.5',
-        displayName: 'GPT-5.5',
-        contextWindow: DEFAULT_CODEX_CONTEXT_WINDOW,
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-        defaultReasoningEffort: 'medium',
-        supportsParallelToolCalls: true,
-        inputModalities: ['text', 'image'],
-    },
-    {
-        id: 'gpt-5.3-codex-spark',
-        displayName: 'GPT-5.3 Codex Spark',
-        contextWindow: 128_000,
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-        defaultReasoningEffort: 'high',
-        supportsParallelToolCalls: true,
-        inputModalities: ['text'],
-    },
-]
-
-const DEFAULT_SHARED_CONFIG_LINES = [
-    `model = "${DEFAULT_CODEX_MODEL}"`,
-    'model_context_window = 300000',
-    'model_auto_compact_token_limit = 285000',
-    `model_reasoning_effort = "${DEFAULT_CODEX_CHAT_SETTINGS.reasoningEffort}"`,
-    'disable_response_storage = true',
-]
-
 export function getDefaultCodexAuthJson(_providerType: CodexConnectionProviderType = 'openai-official') {
     void _providerType
     return '{}\n'
@@ -158,12 +93,10 @@ export function getDefaultCodexAuthJson(_providerType: CodexConnectionProviderTy
 
 export function getDefaultCodexConfig(_providerType: CodexConnectionProviderType = 'openai-official') {
     void _providerType
-    return [...DEFAULT_SHARED_CONFIG_LINES, ''].join('\n')
+    return '\n'
 }
 
 export function createDefaultCodexProviderModel(modelId = DEFAULT_CODEX_MODEL): CodexProviderModel {
-    const nativeModel = getNativeCodexProviderModel(modelId)
-    if (nativeModel) return nativeModel
     // Seed known model capabilities when adding a model.
     return applyDeepSeekModelDefaults({
         id: modelId,
@@ -177,12 +110,7 @@ export function createDefaultCodexProviderModel(modelId = DEFAULT_CODEX_MODEL): 
 }
 
 export function isGptCodexModelId(modelId: string) {
-    return modelId.trim().toLowerCase().startsWith('gpt-')
-}
-
-export function isAstraCodexModelId(modelId: string) {
-    const name = modelId.trim().split('/').at(-1) ?? ''
-    return /^gpt-6-astra(?:$|[-:])/i.test(name)
+    return (modelId.trim().split('/').at(-1) ?? '').toLowerCase().startsWith('gpt-')
 }
 
 export function getNewCodexSessionModelSettings(
@@ -194,37 +122,6 @@ export function getNewCodexSessionModelSettings(
         return category === 'scene_operation' ? DEFAULT_CODEX_SCENE_SETTINGS : DEFAULT_CODEX_CHAT_SETTINGS
     }
     return { modelId, reasoningEffort: 'high' as CodexReasoningEffort }
-}
-
-export function getNativeCodexProviderModel(modelId: string) {
-    const normalized = modelId.trim().toLowerCase()
-    const model = CODEX_NATIVE_PROVIDER_MODELS.find((candidate) => candidate.id === normalized)
-    return model ? structuredClone(model) : null
-}
-
-export function applyNativeCodexModelCapabilities(model: CodexProviderModel): CodexProviderModel {
-    const nativeModel = getNativeCodexProviderModel(model.id)
-    if (!nativeModel) return model
-    return {
-        ...model,
-        displayName: nativeModel.displayName,
-        supportedReasoningEfforts: nativeModel.supportedReasoningEfforts,
-        defaultReasoningEffort: nativeModel.supportedReasoningEfforts.includes(model.defaultReasoningEffort)
-            ? model.defaultReasoningEffort
-            : nativeModel.defaultReasoningEffort,
-        supportsParallelToolCalls: true,
-        inputModalities: nativeModel.inputModalities,
-    }
-}
-
-export function expandNativeCodexModels(models: CodexProviderModel[]) {
-    if (!models.some((model) => isGptCodexModelId(model.id))) return models
-    const expanded = models.map(applyNativeCodexModelCapabilities)
-    const existing = new Set(expanded.map((model) => model.id.trim().toLowerCase()))
-    for (const nativeModel of CODEX_NATIVE_PROVIDER_MODELS) {
-        if (!existing.has(nativeModel.id)) expanded.push(structuredClone(nativeModel))
-    }
-    return expanded
 }
 
 export function getDefaultCodexCustomSettings(): CodexCustomProviderSettings {

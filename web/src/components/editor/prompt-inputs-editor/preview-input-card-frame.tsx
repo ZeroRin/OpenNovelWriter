@@ -13,6 +13,7 @@ export function PreviewInputCardFrame({
     collapsible,
     expandLabel,
     collapseLabel,
+    disabled = false,
     children,
 }: {
     title: string
@@ -22,6 +23,7 @@ export function PreviewInputCardFrame({
     collapsible: boolean
     expandLabel: string
     collapseLabel: string
+    disabled?: boolean
     children: ReactNode
 }) {
     const [expanded, setExpanded] = useState(() => !collapsible)
@@ -31,13 +33,13 @@ export function PreviewInputCardFrame({
             <button
                 type="button"
                 className={cn(
-                    'flex w-full items-center justify-between gap-3 rounded-md px-1 py-2 text-left',
+                    'inline-flex min-h-9 max-w-full min-w-0 items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-left max-md:min-h-11',
                     'transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40'
                 )}
                 onClick={() => setExpanded(true)}
                 aria-expanded={false}
-                aria-label={expandLabel}
-                title={expandLabel}
+                aria-label={`${expandLabel} ${title}`}
+                title={`${expandLabel} ${title}`}
             >
                 <span className="min-w-0 truncate text-sm font-medium">{title}</span>
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -46,7 +48,7 @@ export function PreviewInputCardFrame({
     }
 
     return (
-        <div className="rounded-md border bg-background p-3 space-y-3">
+        <div className="w-full min-w-0 rounded-md border bg-background p-3 space-y-3">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
                     <div className="flex items-center gap-2">
@@ -65,15 +67,15 @@ export function PreviewInputCardFrame({
                         )}
                         onClick={() => setExpanded(false)}
                         aria-expanded={true}
-                        aria-label={collapseLabel}
-                        title={collapseLabel}
+                        aria-label={`${collapseLabel} ${title}`}
+                        title={`${collapseLabel} ${title}`}
                     >
                         <ChevronDown className="h-4 w-4" />
                     </button>
                 )}
             </div>
 
-            {children}
+            <fieldset disabled={disabled} className="min-w-0">{children}</fieldset>
         </div>
     )
 }

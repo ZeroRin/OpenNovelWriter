@@ -686,7 +686,6 @@ export function AIConnectionsTab() {
             <Card>
                 <CardHeader>
                     <CardTitle>{t('connectionsTitle')}</CardTitle>
-                    <CardDescription>{t('connectionsDescription')}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                     <div className="grid gap-4 md:grid-cols-2">
@@ -749,7 +748,6 @@ export function AIConnectionsTab() {
                                 )}
                             </button>
                         </div>
-                        <p className="text-xs text-muted-foreground">{t('apiKeyHint')}</p>
                     </div>
 
                     <div className="space-y-2">
@@ -901,7 +899,6 @@ export function AIConnectionsTab() {
                         <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
                             <div className="space-y-3">
                                 <div className="text-sm font-semibold">{t('providersTitle')}</div>
-                                <p className="text-xs text-muted-foreground">{t('providersHint')}</p>
                                 <div className="rounded-lg border border-muted">
                                     <div className="border-b border-muted p-2">
                                         <Input

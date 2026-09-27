@@ -13,6 +13,7 @@ export type RunChatMessage = {
 }
 
 type RunModelInput = {
+    sessionId: string
     system?: string
     temperature?: number
     maxTokens?: number
@@ -56,6 +57,7 @@ export function getAvailableModelAssignments(group: ModelGroup, nowMs = Date.now
 async function runModelGroupStream(
     data: {
         groupId: string
+        sessionId: string
         preferredAssignmentId?: string | null
         system?: string
         temperature?: number
@@ -239,6 +241,7 @@ export async function runModelGroupWithFallback(options: {
         const result = await runModelGroupStream(
             {
                 groupId: options.group.id,
+                sessionId: options.input.sessionId,
                 preferredAssignmentId: attemptOrder[0]?.id ?? null,
                 system: options.input.system,
                 temperature: options.input.temperature,

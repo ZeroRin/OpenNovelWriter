@@ -28,7 +28,6 @@ export interface BuiltinSkillPresetSource {
     name: string
     description: string | null
     category: SkillCategory
-    prompt: string | null
 }
 
 export interface BuiltinSkillPresetRegistryEntry {
@@ -90,7 +89,6 @@ function loadSkillSource(assetDirectoryPath: string, relativePath: string): Buil
         name: skill.name,
         description: skill.description,
         category: metadata.category,
-        prompt: metadata.prompt,
     }
 }
 

@@ -5,19 +5,19 @@
     "presetId": "preset-1rdyzld",
     "name": "预设-通用聊天",
     "description": "通用聊天，可以在额外信息里插入额外的内容。注入的信息会和已注入的知识进行去重，保证不破坏缓存以及减少重复注入。为了不破坏缓存，选取聊天系统提示词后无法切换",
-    "revision": 1.5,
-    "exportedAt": "2026-07-18T06:14:36.544Z"
+    "revision": 1.9,
+    "exportedAt": "2026-09-24T21:56:59.309Z"
   },
   "bundle": {
     "schema": "open-novel-writer/prompt-bundle",
     "version": 1,
-    "exportedAt": "2026-07-18T06:14:36.544Z",
+    "exportedAt": "2026-09-24T21:56:59.309Z",
     "entryName": "预设-通用聊天",
     "prompts": [
       {
         "name": "预设-通用聊天",
         "category": "ai_chat",
-        "description": null,
+        "description": "围绕小说创作进行讨论、分析和建议，结合当前提问、词条、全书摘要及作者选择的额外资料。",
         "messages": [
           {
             "id": "e1da1c14-d54a-4cf8-a6cd-ef798a5cbcc1",
@@ -27,7 +27,7 @@
           {
             "id": "83e5637e-82bd-4e86-a738-e36f863fa432",
             "role": "user",
-            "content": "下面是一些帮助你理解小说的信息：\n<TermKnowledge>：提供结构化的、作者专属的词条知识，以及关于背景设定、故事、角色和其他元素的信息，还有旨在帮助维持故事内部的一致性、连贯性和流畅度。这一部分的知识优先级高于你作为AI的内部知识，如果这一部分的设定和你的寻常知识冲突，以提供的知识为主。\n{%- if inputs[\"额外信息\"].snippet.count %}\n\t<SnippetInfo>：此部分一般包含user的注释，一般呈现为碎片化，但是却包含帮助你理解的重要信息\n{%- endif %}\n<Outline>: 小说的剧情总结，帮助你理解小说发生的故事\n{%- if inputs[\"额外信息\"].chapterOutline.count or inputs[\"额外信息\"].actOutline.count %}\n\t<DetailedOutline>：user 勾选提供的卷纲/章纲细纲，描述了相关剧情的规划与走向，帮助你把握故事脉络。\n{%- endif %}\n{% include \"TermKnowledgeChat\" %}\n{% include \"SnippetInfo\" %}\n{% include \"OutlineFull\" %}\n{% include \"DetailedOutlineChat\" %}\n\n现在，根据以上信息，回答用户的问题或者完成用户的指令：\n{{ chat.userInput }}"
+            "content": "下面是一些帮助你理解小说的信息：\n<TermKnowledge>：提供结构化的、作者专属的词条知识，以及关于背景设定、故事、角色和其他元素的信息，还有旨在帮助维持故事内部的一致性、连贯性和流畅度。这一部分的知识优先级高于你作为AI的内部知识，如果这一部分的设定和你的寻常知识冲突，以提供的知识为主。\n{%- if inputs[\"额外信息\"].snippet.count %}\n\t<SnippetInfo>：此部分一般包含user的注释，一般呈现为碎片化，但是却包含帮助你理解的重要信息\n{%- endif %}\n<Outline>: 小说的剧情总结，帮助你理解小说发生的故事\n{%- if inputs[\"额外信息\"].chapterOutline.count or inputs[\"额外信息\"].actOutline.count %}\n\t<DetailedOutline>：user 勾选提供的卷纲/章纲细纲，描述了相关剧情的规划与走向，帮助你把握故事脉络。\n{%- endif %}\n{%- include \"TermKnowledgeChat\" %}\n{%- include \"SnippetInfo\" %}\n{%- include \"AdditionalInfo\" %}\n{%- include \"OutlineFull\" %}\n{%- include \"DetailedOutlineChat\" %}\n\n现在，根据以上信息，回答用户的问题或者完成用户的指令：\n{{ chat.userInput }}"
           }
         ],
         "inputs": [
@@ -72,7 +72,7 @@
                   }
                 },
                 "label": {
-                  "enabled": false,
+                  "enabled": true,
                   "actTreatAs": "summary",
                   "sceneTreatAs": "full_text"
                 },
@@ -88,7 +88,7 @@
                   }
                 },
                 "termTag": {
-                  "enabled": false
+                  "enabled": true
                 }
               }
             }
@@ -102,12 +102,12 @@
       {
         "name": "TermKnowledgeChat",
         "category": "component",
-        "description": null,
+        "description": "合并当前提问、聊天历史、额外信息中所选词条与词条标记，以及所选细纲提及的词条，去重后输出完整知识。",
         "messages": [
           {
             "id": "991dd446-00bd-4965-a22d-1850eddfc81c",
             "role": "assistant",
-            "content": "{%- set terms = chat.userInput.terms | union(chat.history.terms)| union(inputs[\"额外信息\"].term)| union(inputs[\"额外信息\"].termTag) %}\n{%- if terms.count %}\n\t<TermKnowledge>\n\n\t\t{{ terms.value }}\n\n\t</TermKnowledge>\n{%- endif %}"
+            "content": "{%- set outlineTerms = termsfrom(inputs[\"额外信息\"].actOutline, inputs[\"额外信息\"].chapterOutline) %}\n{%- set terms = chat.userInput.terms | union(chat.history.terms)| union(inputs[\"额外信息\"].term)| union(inputs[\"额外信息\"].termTag) | union(outlineTerms) %}\n{%- if terms.count %}\n\n<TermKnowledge>\n{{ terms.value }}\n</TermKnowledge>\n{%- endif %}"
           }
         ],
         "inputs": [],
@@ -119,12 +119,29 @@
       {
         "name": "SnippetInfo",
         "category": "component",
-        "description": null,
+        "description": "输出“额外信息”中选择的片段，提供作者的补充说明和参考内容。",
         "messages": [
           {
             "id": "21d001d4-c7a8-4e1b-9d37-67f52fbf1905",
             "role": "assistant",
-            "content": "{% if inputs[\"额外信息\"].snippet.count %}\n\t<SnippetInfo>\n\n\t\t{{ inputs[\"额外信息\"].snippet.value }}\n\n\t</SnippetInfo>\n{% endif %}"
+            "content": "{%- if inputs[\"额外信息\"].snippet.value %}\n\n<SnippetInfo>\n{{ inputs[\"额外信息\"].snippet.value }}\n</SnippetInfo>\n{%- endif %}"
+          }
+        ],
+        "inputs": [],
+        "isNsfw": false,
+        "allowLlmCall": false,
+        "allowAgentCall": false,
+        "agentCallMode": "generate_then_agent"
+      },
+      {
+        "name": "AdditionalInfo",
+        "category": "component",
+        "description": "输出“额外信息”中选择的全书、卷、章、场景及标签关联的正文或摘要，作为需要重点关注的补充资料。",
+        "messages": [
+          {
+            "id": "80ca5623-b94b-4237-8e33-f5bb3427c8dc",
+            "role": "assistant",
+            "content": "{%- set additional = inputs[\"额外信息\"] %}\n{%- if additional.fullNovel.value or additional.act.value or additional.chapter.value or additional.scene.value %}\n\n<AdditionalInfo>\n以下是作者指定需要重点关注的补充正文或摘要。请结合本次写作要求或问题，关注其中的情节、背景和细节。\n{%- if additional.fullNovel.value %}\n\n{{ additional.fullNovel.value }}\n{%- endif %}\n{%- if additional.act.value %}\n\n{{ additional.act.value }}\n{%- endif %}\n{%- if additional.chapter.value %}\n\n{{ additional.chapter.value }}\n{%- endif %}\n{%- if additional.scene.value %}\n\n{{ additional.scene.value }}\n{%- endif %}\n</AdditionalInfo>\n{%- endif %}"
           }
         ],
         "inputs": [],
@@ -136,12 +153,12 @@
       {
         "name": "OutlineFull",
         "category": "component",
-        "description": null,
+        "description": "提供全书已有的卷摘要和场景摘要，帮助理解整体剧情。",
         "messages": [
           {
             "id": "ce51f0e7-19de-462f-a49b-345b396fadd8",
             "role": "assistant",
-            "content": "<Outline>\n\n\t{{ novel.outline.full }}\n\n</Outline>"
+            "content": "{%- if novel.outline.full %}\n\n<Outline>\n{{ novel.outline.full }}\n</Outline>\n{%- endif %}"
           }
         ],
         "inputs": [],
@@ -153,12 +170,12 @@
       {
         "name": "DetailedOutlineChat",
         "category": "component",
-        "description": null,
+        "description": "提供“额外信息”中选择的卷纲和章纲，说明相关剧情的规划与走向。",
         "messages": [
           {
             "id": "2a546209-a531-4e36-bf1c-dbe9a4bbbac7",
             "role": "assistant",
-            "content": "{%- set actOutlineText = inputs[\"额外信息\"].actOutline.value %}\n{%- set chapterOutlineText = inputs[\"额外信息\"].chapterOutline.value %}\n{%- if actOutlineText or chapterOutlineText %}\n\t<DetailedOutline>\n\t\t{%- if actOutlineText %}\n\n\t\t\t<ActOutline>\n\t\t\t\t{{ actOutlineText }}\n\t\t\t</ActOutline>\n\t\t{%- endif %}\n\t\t{%- if chapterOutlineText %}\n\n\t\t\t<ChapterOutline>\n\t\t\t\t{{ chapterOutlineText }}\n\t\t\t</ChapterOutline>\n\t\t{%- endif %}\n\n\t</DetailedOutline>\n{%- endif %}"
+            "content": "{%- set actOutlineText = inputs[\"额外信息\"].actOutline.value %}\n{%- set chapterOutlineText = inputs[\"额外信息\"].chapterOutline.value %}\n{%- if actOutlineText or chapterOutlineText %}\n\n<DetailedOutline>\n{%- if actOutlineText %}\n<ActOutline>\n{{ actOutlineText }}\n</ActOutline>\n{%- endif %}\n{%- if chapterOutlineText %}\n<ChapterOutline>\n{{ chapterOutlineText }}\n</ChapterOutline>\n{%- endif %}\n</DetailedOutline>\n{%- endif %}"
           }
         ],
         "inputs": [],

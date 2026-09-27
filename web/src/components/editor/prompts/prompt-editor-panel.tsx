@@ -247,6 +247,7 @@ export function PromptEditorPanel({
         { key: '{% if scene.hasPreviousText %}...{% endif %}', description: t('editor.templateReference.sceneHasPreviousText') },
         { key: '{{ scene.chapterOutline }}', description: t('editor.templateReference.sceneChapterOutline') },
         { key: '{{ scene.actOutline }}', description: t('editor.templateReference.sceneActOutline') },
+        { key: '{{ termsfrom(scene.chapterOutline, inputs["额外信息"].chapter).value }}', description: t('editor.templateReference.termsFrom') },
         { key: '{% if scene.hasChapterOutline %}...{% endif %}', description: t('editor.templateReference.sceneHasChapterOutline') },
         { key: '{% if scene.hasActOutline %}...{% endif %}', description: t('editor.templateReference.sceneHasActOutline') },
         { key: '{{ inputs["角色"].text }}', description: t('editor.templateReference.inputText') },

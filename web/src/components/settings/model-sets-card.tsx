@@ -351,7 +351,6 @@ export function ModelSetsCard() {
                     <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
                         <div className="space-y-3">
                             <div className="text-sm font-semibold">{t('availableGroupsTitle')}</div>
-                            <p className="text-xs text-muted-foreground">{t('availableGroupsHint')}</p>
                             <div className="rounded-lg border border-muted">
                                 <ScrollArea className="h-[360px]">
                                     <div className="p-3 space-y-2">

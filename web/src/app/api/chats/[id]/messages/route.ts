@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getCurrentUser } from '@/lib/auth'
-import { normalizeString, normalizeStringId, serializeEditorChatConversation } from '@/lib/server/editor-chat'
+import { normalizeJsonString, normalizeString, normalizeStringId, serializeEditorChatConversation } from '@/lib/server/editor-chat'
 import { normalizeManagedAttachmentUrls } from '@/lib/server/storage'
 import { scheduleImageGcSweep } from '@/lib/server/image-gc'
 
@@ -89,6 +89,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
                     sentContent: typeof body?.sentContent === 'string' ? body.sentContent : null,
                     fullRenderedContent:
                         typeof body?.fullRenderedContent === 'string' ? body.fullRenderedContent : null,
+                    renderStateJson: normalizeJsonString(body?.renderState),
                     promptTokens: normalizeTokenCount(body?.promptTokens),
                     completionTokens: normalizeTokenCount(body?.completionTokens),
                     totalTokens: normalizeTokenCount(body?.totalTokens),

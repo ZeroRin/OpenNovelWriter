@@ -6,6 +6,7 @@ type TemplateScene = {
     order: number
     summary: string | null
     content: string
+    labelIds: string[]
 }
 
 type TemplateChapter = {
@@ -20,6 +21,7 @@ type TemplateAct = {
     number: number
     title: string | null
     summary?: string | null
+    labelIds: string[]
 }
 
 export type ContentSelectionTemplateResources = {
@@ -35,6 +37,7 @@ export type ContentSelectionTemplateResources = {
 }
 
 export type ContentSelectionTemplateListItem = {
+    key: string
     text: string
     value: string
 }
@@ -227,7 +230,7 @@ function getFullNovelRenderValue(
 
     return actNumbers
         .map((actNumber) =>
-            getActRenderValue(actByNumber.get(actNumber) ?? { number: actNumber, title: null }, 'full_text', resources, {
+            getActRenderValue(actByNumber.get(actNumber) ?? { number: actNumber, title: null, labelIds: [] }, 'full_text', resources, {
                 chapterNumberById: params.chapterNumberById,
                 locale: params.locale,
             })
@@ -246,6 +249,9 @@ export function getContentSelectionTemplateItems(params: {
 }) {
     const sortedChapters = getSortedChapters(params.resources)
     const chapterNumberById = new Map(sortedChapters.map((chapter, index) => [chapter.id, index + 1]))
+    const selectedLabelIds = new Set(
+        params.selections.flatMap((selection) => selection.kind === 'label' ? [selection.labelId] : [])
+    )
     const sceneMetaById = new Map<
         string,
         {
@@ -277,6 +283,7 @@ export function getContentSelectionTemplateItems(params: {
         return params.selections
             .filter((selection): selection is Extract<ContentSelectionTarget, { kind: 'full_novel' }> => selection.kind === 'full_novel')
             .map(() => ({
+                key: `fullNovel:${treatAs}`,
                 text: formatFullNovelLabel(params.locale),
                 value: getFullNovelRenderValue(treatAs, params.resources, {
                     chapterNumberById,
@@ -287,14 +294,24 @@ export function getContentSelectionTemplateItems(params: {
     }
 
     if (params.kind === 'act') {
-        const treatAs = params.input.contentSelection.options.act.treatAs
         const actByNumber = new Map(params.resources.acts.map((act) => [act.number, act]))
-        return params.selections
-            .filter((selection): selection is Extract<ContentSelectionTarget, { kind: 'act' }> => selection.kind === 'act')
-            .map((selection) => ({
-                text: formatActLabel(selection.actNumber, actByNumber.get(selection.actNumber)?.title ?? null, params.locale),
+        const selectedActs = new Map<number, ContentSelectionTreatAs>()
+        for (const selection of params.selections) {
+            if (selection.kind === 'act') {
+                selectedActs.set(selection.actNumber, params.input.contentSelection.options.act.treatAs)
+            }
+        }
+        for (const act of [...params.resources.acts].sort((left, right) => left.number - right.number)) {
+            if (!selectedActs.has(act.number) && act.labelIds.some((id) => selectedLabelIds.has(id))) {
+                selectedActs.set(act.number, params.input.contentSelection.options.label.actTreatAs)
+            }
+        }
+        return [...selectedActs]
+            .map(([actNumber, treatAs]) => ({
+                key: `act:${actNumber}:${treatAs}`,
+                text: formatActLabel(actNumber, actByNumber.get(actNumber)?.title ?? null, params.locale),
                 value: getActRenderValue(
-                    actByNumber.get(selection.actNumber) ?? { number: selection.actNumber, title: null },
+                    actByNumber.get(actNumber) ?? { number: actNumber, title: null, labelIds: [] },
                     treatAs,
                     params.resources,
                     {
@@ -314,6 +331,7 @@ export function getContentSelectionTemplateItems(params: {
                 const chapter = params.resources.chaptersById.get(selection.chapterId) ?? null
                 const chapterNumber = chapterNumberById.get(selection.chapterId) ?? 0
                 return {
+                    key: `chapter:${selection.chapterId}:${treatAs}`,
                     text: chapterNumber > 0 ? formatChapterLabel(chapterNumber, chapter?.title ?? null, params.locale) : (chapter?.title?.trim() ?? ''),
                     value: getChapterRenderValue(chapter, treatAs, {
                         chapterNumber,
@@ -330,6 +348,7 @@ export function getContentSelectionTemplateItems(params: {
         return params.selections
             .filter((selection): selection is Extract<ContentSelectionTarget, { kind: 'act_outline' }> => selection.kind === 'act_outline')
             .map((selection) => ({
+                key: `actOutline:${selection.actNumber}`,
                 text: formatActOutlineLabel(selection.actNumber, actByNumber.get(selection.actNumber)?.title ?? null, params.locale),
                 value: normalizeText(outlineTextByActNumber.get(selection.actNumber)),
             }))
@@ -347,6 +366,7 @@ export function getContentSelectionTemplateItems(params: {
                 const chapter = params.resources.chaptersById.get(selection.chapterId) ?? null
                 const chapterNumber = chapterNumberById.get(selection.chapterId) ?? 0
                 return {
+                    key: `chapterOutline:${selection.chapterId}`,
                     text: formatChapterOutlineLabel(chapterNumber, chapter?.title ?? null, params.locale),
                     value: normalizeText(outlineTextByChapterId.get(selection.chapterId)),
                 }
@@ -354,13 +374,25 @@ export function getContentSelectionTemplateItems(params: {
             .filter((item) => item.value)
     }
 
-    const treatAs = params.input.contentSelection.options.scene.treatAs
-    return params.selections
-        .filter((selection): selection is Extract<ContentSelectionTarget, { kind: 'scene' }> => selection.kind === 'scene')
-        .map((selection) => {
-            const scene = params.resources.scenesById.get(selection.sceneId) ?? null
-            const sceneMeta = sceneMetaById.get(selection.sceneId) ?? null
+    const selectedScenes = new Map<string, ContentSelectionTreatAs>()
+    for (const selection of params.selections) {
+        if (selection.kind === 'scene') {
+            selectedScenes.set(selection.sceneId, params.input.contentSelection.options.scene.treatAs)
+        }
+    }
+    for (const chapter of sortedChapters) {
+        for (const scene of getSortedScenes(chapter)) {
+            if (!selectedScenes.has(scene.id) && scene.labelIds.some((id) => selectedLabelIds.has(id))) {
+                selectedScenes.set(scene.id, params.input.contentSelection.options.label.sceneTreatAs)
+            }
+        }
+    }
+    return [...selectedScenes]
+        .map(([sceneId, treatAs]) => {
+            const scene = params.resources.scenesById.get(sceneId) ?? null
+            const sceneMeta = sceneMetaById.get(sceneId) ?? null
             return {
+                key: `scene:${sceneId}:${treatAs}`,
                 text:
                     sceneMeta
                         ? formatSceneLabel({

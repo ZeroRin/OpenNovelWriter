@@ -1,8 +1,10 @@
 import type { SceneEditToolResult } from '@/lib/codex-scene-edit'
+import type { CodexSubagent } from '@/lib/codex-subagents'
 
 export type CodexWorkStatus = 'running' | 'completed' | 'failed' | 'declined'
 
 export type CodexWorkMetadata = {
+    subagent?: CodexSubagent
     workStatus?: CodexWorkStatus
     toolInput?: string
     detailVersion?: string

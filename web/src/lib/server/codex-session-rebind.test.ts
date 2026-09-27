@@ -3,7 +3,6 @@ import { test } from 'node:test'
 
 import {
     DEFAULT_CODEX_MODEL,
-    expandNativeCodexModels,
     parseCodexProviderModelsJson,
 } from '@/lib/codex-config'
 
@@ -14,7 +13,7 @@ function resolveConnectionDefaultModelId(connection: {
     modelsJson: string
 }) {
     if (connection.providerType === 'custom') {
-        const models = expandNativeCodexModels(parseCodexProviderModelsJson(connection.modelsJson))
+        const models = parseCodexProviderModelsJson(connection.modelsJson)
         const preferred = connection.defaultModelId?.trim() || ''
         if (preferred && models.some((model) => model.id === preferred)) return preferred
         if (models[0]?.id) return models[0].id

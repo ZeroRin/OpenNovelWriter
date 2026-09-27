@@ -1,3 +1,4 @@
+import { prepareContinuationHandoff } from '@/lib/server/continuation-handoff'
 import { appendCodexArtifactReferences, parseCodexArtifactFiles } from '@/lib/codex-artifacts'
 import { registerLiveCodexMessages } from '@/lib/server/codex-live-messages'
 import { projectCodexRunEvent } from '@/lib/server/codex-message-projection'
@@ -15,10 +16,13 @@ import {
     reserveActiveCodexRun,
     runNovelCodexTurn,
 } from '@/lib/server/codex-app-server'
-import { mergeCompletedAssistantText } from '@/lib/server/codex-assistant-text'
-import { readSkill } from '@/lib/server/skill-storage'
+import {
+    CodexSkillUnavailableError,
+    resolveCodexSessionSkillReferences,
+    rewriteCodexSkillReferences,
+    type CodexSkillReference,
+} from '@/lib/server/codex-session-skills'
 import { getNovelWorkspaceTermFileMap } from '@/lib/server/novel-workspace'
-import { seedSkillSessionArtifact } from '@/lib/server/codex-skill-session'
 import { getCodexSessionWorkspacePath } from '@/lib/server/codex-session-workspace'
 import {
     normalizeCodexResponseAnnotations,
@@ -126,6 +130,7 @@ function upsertEventMessage(messages: CodexSessionMessage[], event: CodexRouteRu
         kind: event.kind,
         workStatus: event.workStatus,
         toolInput: event.toolInput,
+        subagent: event.subagent,
         content: [event.title, event.content].filter(Boolean).join('\n\n'),
         attachments: event.attachments ?? [],
         jsonArtifacts: event.jsonArtifacts,
@@ -193,6 +198,18 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         return NextResponse.json({ detail: 'Goal objective must contain at most 4,000 characters.' }, { status: 400 })
     }
 
+    let skillRefs: CodexSkillReference[]
+    try {
+        skillRefs = await resolveCodexSessionSkillReferences({
+            ownerId: user.userId, sessionCategory: existing.category, content, skillIds: body?.skillIds,
+        })
+    } catch (error) {
+        if (error instanceof CodexSkillUnavailableError) {
+            return NextResponse.json({ detail: error.message }, { status: 400 })
+        }
+        throw error
+    }
+
     const activeRun = reserveActiveCodexRun(id)
     if (!activeRun) {
         return NextResponse.json({ detail: 'Codex session is already running.' }, { status: 409 })
@@ -249,27 +266,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
             }
         }
 
-        // Skill commands are stored in the message as `[name](skill:SKILL_ID)`. Collect their ids from
-        // the content (and any explicit `skillIds` in the body),
-        // resolve to `{ id, name }` for the turn's skill input items, and rewrite the tokens to
-        // Codex-native `$name` in the prompt that is actually sent to the model.
-        const bodySkillIds = Array.isArray(body?.skillIds)
-            ? (body.skillIds as unknown[]).filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-            : []
-        const contentSkillIds: string[] = []
-        for (const match of content.matchAll(/\[[^\]]+\]\(skill:([^)]+)\)/g)) {
-            if (match[1]) contentSkillIds.push(match[1])
-        }
-        const uniqueSkillIds = [...new Set([...contentSkillIds, ...bodySkillIds])]
-        const skillRefs = (
-            await Promise.all(
-                uniqueSkillIds.map(async (skillId) => {
-                    const skill = await readSkill(user.userId, skillId).catch(() => null)
-                    return skill ? { id: skill.id, name: skill.name } : null
-                })
-            )
-        ).filter((ref): ref is { id: string; name: string } => ref !== null)
-
         // Term mentions `[title](term:TERM_ID)` point Codex at the read-only Markdown file the term is
         // projected to under `novel/terms/`. Resolve each id to its (collision-free) file name so the
         // rewritten instruction names an exact path Codex can open.
@@ -318,8 +314,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
             for (const num of refOutlineActNumbers) if ((wordCountByActNumber.get(num) ?? 0) <= 0) emptyOutlineActNumbers.add(num)
         }
 
-        const promptText = content
-            .replace(/\[([^\]]+)\]\(skill:([^)]+)\)/g, (_full, label: string) => `$${label}`)
+        const promptText = rewriteCodexSkillReferences(content, skillRefs)
             // A continuation panel reference becomes an explicit instruction carrying the panelId,
             // which Codex passes to get_continuation_draft / set_continuation_draft to write the result.
             .replace(
@@ -384,49 +379,17 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                     `${label} (卷 — read the section marked \`<!-- act_number: ${actNumber} -->\` in novel/outline.md for this volume's chapter structure and summaries, then open the relevant novel/chapters/<id>.md when you need the prose, before responding)`
             )
 
-        // A chat skill with a bound prompt assembles that prompt on the client (filled inputs + the
-        // overview + referenced terms) and ships the resolved blocks here. Materialize them into the
-        // session's `artifacts/` so Codex can run_llm against the file or read it for context — the
-        // mid-session equivalent of seeding a scene_operation/continuation artifact at creation time.
-        const promptArtifact = body?.promptArtifact && typeof body.promptArtifact === 'object'
-            ? (body.promptArtifact as Record<string, unknown>)
-            : null
-        const artifactSkillId = promptArtifact && typeof promptArtifact.skillId === 'string' ? promptArtifact.skillId.trim() : ''
-        const artifactBlocks = promptArtifact && Array.isArray(promptArtifact.renderedBlocks)
-            ? (promptArtifact.renderedBlocks as unknown[])
-                .map((block) => {
-                    const record = block as { role?: unknown; text?: unknown }
-                    return typeof record?.role === 'string' && typeof record?.text === 'string'
-                        ? { role: record.role, text: record.text }
-                        : null
-                })
-                .filter((block): block is { role: string; text: string } => block !== null)
-            : []
-        let seededArtifactFileName: string | null = null
-        if (artifactSkillId && artifactBlocks.length > 0) {
-            try {
-                const seeded = await seedSkillSessionArtifact({
-                    ownerId: user.userId,
-                    novelId: existing.novelId,
-                    sessionId: existing.id,
-                    skillId: artifactSkillId,
-                    renderedBlocks: artifactBlocks,
-                })
-                seededArtifactFileName = seeded?.fileName ?? null
-            } catch (error) {
-                console.error('Seed chat skill artifact error:', error)
-            }
-        }
-
-        let finalPromptText = seededArtifactFileName
-            ? `${promptText}\n\n[OpenNovelWriter] The prompt for the skill above is pre-assembled with the author's inputs (overview + referenced terms included) in artifacts/${seededArtifactFileName}. Follow the skill's instructions — call run_llm against that file, or read it for context.`
-            : promptText
-        finalPromptText = appendCodexArtifactReferences(finalPromptText, artifactFiles)
+        const currentMessages = parseCodexSessionMessages(existing.messagesJson)
+        const handoff = existing.continuationPanelId && !resumeGoal && !currentMessages.some((message) => message.role === 'user') ? await prepareContinuationHandoff({
+            ownerId: user.userId, sessionId: id, novelId: existing.novelId,
+            panelId: existing.continuationPanelId,
+        }) : null
+        if (handoff) artifactFiles.push(...handoff.fileNames)
+        let finalPromptText = appendCodexArtifactReferences([promptText, handoff?.instruction].filter(Boolean).join('\n\n'), artifactFiles)
         finalPromptText = prependCodexResponseAnnotations(finalPromptText, responseAnnotations)
 
         const now = new Date()
         const startedAt = now.toISOString()
-        const currentMessages = parseCodexSessionMessages(existing.messagesJson)
         const sentAsGoal = !resumeGoal && existing.composerMode === 'goal' && currentGoal === null
         const userMessage: CodexSessionMessage = {
             id: messageId!,
@@ -500,8 +463,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                 }
                 const streamedMessages = [...optimisticMessages]
                 const releaseLiveMessages = registerLiveCodexMessages(id, streamedMessages)
-                let assistantSegmentId: string | null = null
-                let assistantSegmentCreatedAt: string | null = null
                 let goalPersistence = Promise.resolve()
                 let turnPersistence = Promise.resolve()
                 let contextWindow: CodexContextWindow | null = null
@@ -510,10 +471,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                     const result = await runNovelCodexTurn({
                         ...runInput,
                         stream: {
-                            onTurnStarted: () => {
-                                assistantSegmentId = null
-                                assistantSegmentCreatedAt = null
-                            },
                             onTurnCompleted: () => {
                                 const messagesJson = JSON.stringify(streamedMessages)
                                 turnPersistence = turnPersistence.then(async () => {
@@ -523,20 +480,11 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                                     })
                                 })
                             },
-                            onAssistantDelta: (delta) => {
-                                if (!assistantSegmentId) {
-                                    assistantSegmentId = createCodexMessageId('codex_assistant_stream')
-                                    assistantSegmentCreatedAt = new Date().toISOString()
-                                }
-                                const segmentId = assistantSegmentId
-                                const segmentCreatedAt = assistantSegmentCreatedAt ?? new Date().toISOString()
-                                assistantSegmentCreatedAt = segmentCreatedAt
-                                appendAssistantDeltaMessage(streamedMessages, delta, segmentId, segmentCreatedAt)
-                                send('assistant_delta', { id: segmentId, delta, createdAt: segmentCreatedAt })
+                            onAssistantDelta: (event) => {
+                                appendAssistantDeltaMessage(streamedMessages, event.delta, event.id, event.createdAt)
+                                send('assistant_delta', event)
                             },
                             onAssistantNotification: (notification) => {
-                                assistantSegmentId = null
-                                assistantSegmentCreatedAt = null
                                 appendAssistantDeltaMessage(
                                     streamedMessages,
                                     notification.content,
@@ -554,34 +502,15 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                                 if (existing) {
                                     existing.content += event.delta
                                 } else {
-                                    assistantSegmentId = null
-                                    assistantSegmentCreatedAt = null
                                     streamedMessages.push({ id: event.id, role: 'event', kind: 'reasoning', workStatus: 'running', content: event.delta, createdAt: event.createdAt })
                                 }
                                 send('reasoning_delta', event)
                             },
                             onPlanDelta: (event) => {
-                                // Same rule as onEvent: later deltas accumulate into the existing
-                                // plan message, so only the first one breaks the assistant segment.
-                                const isNewEvent = !streamedMessages.some((message) => message.id === event.id)
-                                if (isNewEvent) {
-                                    assistantSegmentId = null
-                                    assistantSegmentCreatedAt = null
-                                }
                                 upsertPlanDeltaMessage(streamedMessages, event)
                                 send('plan_delta', event)
                             },
                             onEvent: (event) => {
-                                // Only a NEW event interleaves with the assistant text and warrants
-                                // starting a fresh segment. Re-emits of an existing id (command output
-                                // deltas, the image-generation re-emit that adds the saved file URL)
-                                // update in place — breaking the segment for them would chop the
-                                // streaming reply mid-sentence into separate bubbles.
-                                const isNewEvent = !streamedMessages.some((message) => message.id === event.id)
-                                if (isNewEvent) {
-                                    assistantSegmentId = null
-                                    assistantSegmentCreatedAt = null
-                                }
                                 upsertEventMessage(streamedMessages, event)
                                 send('event', projectCodexRunEvent(event))
                             },
@@ -629,17 +558,15 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                     await Promise.all([goalPersistence, turnPersistence])
                     contextWindow = result.contextWindow ?? contextWindow
 
+                    for (const message of result.assistantMessages) {
+                        const index = streamedMessages.findIndex((existing) => existing.id === message.id)
+                        if (index < 0) streamedMessages.push({ ...message, role: 'assistant' })
+                        else streamedMessages[index] = { ...streamedMessages[index], ...message }
+                    }
                     const turnAssistantMessages = streamedMessages
                         .slice(optimisticMessages.length)
                         .filter((message) => message.role === 'assistant')
-                    const streamedAssistantText = turnAssistantMessages.map((message) => message.content).join('')
-                    const reconciledAssistant = mergeCompletedAssistantText(streamedAssistantText, result.assistantText)
-                    if (result.status === 'completed' && reconciledAssistant.delta) {
-                        const segmentId = createCodexMessageId('codex_assistant')
-                        const segmentCreatedAt = new Date().toISOString()
-                        appendAssistantDeltaMessage(streamedMessages, reconciledAssistant.delta, segmentId, segmentCreatedAt)
-                        send('assistant_delta', { id: segmentId, delta: reconciledAssistant.delta, createdAt: segmentCreatedAt })
-                    } else if (
+                    if (
                         result.status === 'completed' &&
                         turnAssistantMessages.length === 0 &&
                         !result.goalCleared &&
@@ -649,7 +576,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
                         streamedMessages.push({
                             id: createCodexMessageId('codex_assistant'),
                             role: 'assistant',
-                            content: result.assistantText || 'Codex finished without a text response.',
+                            content: 'Codex finished without a text response.',
                             createdAt: new Date().toISOString(),
                         })
                     }

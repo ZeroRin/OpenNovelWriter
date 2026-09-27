@@ -87,6 +87,59 @@ export function extractStringArgCallsFromMessages(messages: PromptMessage[], fun
     return []
 }
 
+export function collectIncludedComponentPrompts<T extends { name: string; messages: PromptMessage[] }>(params: {
+    rootMessages: PromptMessage[]
+    resolveComponentByNameKey: (nameKey: string) => T | null
+    maxDepth?: number
+}) {
+    const maxDepth = params.maxDepth ?? 5
+    const included: Array<{ name: string; prompt: T }> = []
+    const invalidIncludes: string[] = []
+    const seen = new Set<string>()
+
+    const walk = (messages: PromptMessage[], depth: number, stack: string[]) => {
+        if (depth > maxDepth) return
+        const includeNames = extractStringArgCallsFromMessages(messages ?? [], 'include')
+        if (includeNames.length === 0) return
+
+        for (const rawName of includeNames) {
+            const key = rawName.trim().toLowerCase()
+            if (!key) continue
+
+            if (stack.includes(key)) {
+                invalidIncludes.push(rawName)
+                continue
+            }
+
+            const prompt = params.resolveComponentByNameKey(key)
+            if (!prompt) {
+                invalidIncludes.push(rawName)
+                continue
+            }
+
+            if (!seen.has(key)) {
+                seen.add(key)
+                included.push({ name: prompt.name, prompt })
+            }
+
+            walk(prompt.messages ?? [], depth + 1, [...stack, key])
+        }
+    }
+
+    walk(params.rootMessages ?? [], 0, [])
+
+    const invalidUnique: string[] = []
+    const invalidSeen = new Set<string>()
+    for (const raw of invalidIncludes) {
+        const key = raw.trim().toLowerCase()
+        if (!key || invalidSeen.has(key)) continue
+        invalidSeen.add(key)
+        invalidUnique.push(raw.trim())
+    }
+
+    return { included, invalidIncludes: invalidUnique }
+}
+
 export function countStringArgCallsFromMessages(messages: PromptMessage[], functionName: string): Map<string, number> {
     const calls = extractStringArgCallsFromMessages(messages, functionName)
     const map = new Map<string, number>()

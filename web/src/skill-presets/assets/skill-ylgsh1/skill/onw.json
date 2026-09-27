@@ -1,6 +1,5 @@
 {
   "schema": "open-novel-writer/skill",
   "version": 1,
-  "category": "ai_chat",
-  "prompt": null
+  "category": "ai_chat"
 }

@@ -47,14 +47,13 @@ ONW 专属信息写在 `onw.json`：
 {
   "schema": "open-novel-writer/skill",
   "version": 1,
-  "category": "ai_chat",
-  "prompt": null
+  "category": "ai_chat"
 }
 ```
 
-`category` 只能是 `scene_continuation`、`scene_action`、`ai_chat`。`prompt` 为已有 ONW 提示词的精确名称或 `null`；不确定或无需额外模型时使用 `null`。
+`category` 决定技能适用的会话：`ai_chat` 仅用于普通 Codex 聊天，`scene_continuation` 仅用于场景续写会话，`scene_action` 仅用于场景操作会话。用户技能不会跨类别加载。普通聊天需要使用续写提示词时，在指南中写明名称，通过 `export_prompt` 查看定义，再调用 `compose_scene_continuation` 生成消息文件；场景续写技能使用会话中的面板附件并写回草稿。
 
-`ai_chat` 技能在聊天输入框中的唯一显式调用方式是 `/` 加 `SKILL.md` frontmatter 中的精确 `name`，例如 `/story-deslop`。不要创造别名、`@skill` 调用方式或把触发词写成额外注册机制；`plan`、`compact`、`fast` 是 ONW 保留的内置 slash 命令，不得用作 `ai_chat` 技能名。`scene_action` 和 `scene_continuation` 技能仍由各自的场景工作流直接调用，不要为它们伪造 slash 命令。
+各类会话都可通过 `/` 加 `SKILL.md` frontmatter 中的精确 `name` 选择对应类别的技能，例如 `/story-deslop`。`scene_action` 技能也可从场景操作菜单调用。不要创造别名、`@skill` 调用方式或把触发词写成额外注册机制；`plan`、`compact`、`fast` 是 ONW 保留的内置 slash 命令，不得用作 `ai_chat` 技能名。
 
 ## 从想法或工作流创建
 
@@ -80,7 +79,13 @@ ONW 专属信息写在 `onw.json`：
 ## 从外部链接迁移
 
 1. 先调用 `export_skill_library`。
-2. 如果当前环境已经有 `git`，可用 `git --version` 确认。对于公开 GitHub 仓库，只使用以下规范命令克隆到本 session：
+2. 如果当前环境已经有 `git`，可用 `git --version` 确认。实际导入公开 GitHub 仓库时，在当前 session 工作目录下先单独创建导入目录：
+
+   ```text
+   mkdir -p artifacts/skill-imports
+   ```
+
+   然后只使用以下规范命令，将仓库克隆到 `artifacts/skill-imports/UNIQUE_NAME`：
 
    ```text
    git clone --depth 1 --single-branch --no-tags https://github.com/OWNER/REPOSITORY.git artifacts/skill-imports/UNIQUE_NAME

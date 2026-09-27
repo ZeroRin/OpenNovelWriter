@@ -64,6 +64,7 @@ export function PreviewCustomInputCard({
             collapsible={input.collapsed}
             expandLabel={t('advanced.inputs.expand')}
             collapseLabel={t('advanced.inputs.collapse')}
+            disabled={model.disabled}
         >
             <div
 				                                                className={cn(

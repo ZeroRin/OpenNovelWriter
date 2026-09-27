@@ -1,101 +1,29 @@
+import { createPromptContentResolvers } from '@/lib/prompt-content-resolvers'
+import { continuationConversationMarkdown, type ContinuationInputs } from '@/lib/continuation-prompt'
 import { prisma } from '@/lib/db'
 import { htmlToText } from '@/lib/html-to-text'
 import { buildNovelOutlineTexts } from '@/lib/novel-outline'
+import { collectIncludedComponentPrompts, extractStringArgCallsFromMessages } from '@/lib/prompt-template'
 import { renderPromptTemplateMessages, type PromptTemplateRenderResolvers } from '@/lib/prompt-template-render'
-import type { PromptInputDefinition } from '@/lib/prompt-inputs'
+import { deduplicateContentSelections, indexPromptInputs, normalizePromptInputValue, renderPromptCustomInputValue } from '@/lib/prompt-inputs'
 import { getTermStateEntries } from '@/lib/term-state'
 import {
     renderTermTemplateText,
     renderTermTemplateValue,
-    resolveTrackedTermIds,
 } from '@/lib/term-template'
 import { buildTermMentionMatcher, findMentionedTermIds } from '@/components/editor/terms/term-mentions-utils'
 import type { CustomTermCategory, TermEntry } from '@/components/editor/terms/types'
 import { toPromptDto } from '@/lib/server/prompt-helpers'
 
-/**
- * Server-side equivalent of what the scene-continuation panel does on the client: resolve a saved
- * prompt against a concrete scene + a Codex-supplied instruction and inputs, and render it into a
- * `## system` / `## user` conversation markdown. Lets Codex assemble the exact same artifact the
- * panel would — without a real panel. The two MCP tools (`describe_prompt`, `compose_scene_continuation`)
- * back onto these functions.
- *
- * Scope: `custom` and `checkbox` inputs are filled from Codex-provided values (falling back to
- * their defaults); `content_selection` inputs are always left at their default (empty) — Codex does
- * not pick extra content. A required `content_selection` cannot be satisfied this way, so it is
- * surfaced as unsupported.
- */
-
-type ComposeInputs = {
-    custom?: Record<string, string>
-    checkbox?: Record<string, boolean>
-}
-
-export type DescribedPromptInput =
-    | {
-          name: string
-          type: 'custom'
-          required: boolean
-          allowFreeText: boolean
-          allowMultiple: boolean
-          dropdownOptions: Array<{ label: string; content: string }>
-          defaultValue: string
-      }
-    | {
-          name: string
-          type: 'checkbox'
-          required: boolean
-          displayName: string
-          defaultChecked: boolean
-      }
-    | {
-          name: string
-          type: 'content_selection'
-          required: boolean
-          /** Always false: Codex cannot fill content_selection inputs (left at default). */
-          fillable: false
-      }
-
-export type DescribedPrompt = {
-    name: string
-    category: string
-    groups: Array<{ id: string; name: string }>
-    inputs: DescribedPromptInput[]
-    /**
-     * Names of required `content_selection` inputs. When non-empty, this prompt cannot be assembled
-     * by Codex (a real panel is required); tell the author it is not supported yet.
-     */
-    unsupportedRequiredContentSelection: string[]
-}
-
 export type ComposedContinuation = {
     markdown: string
     promptName: string
     groups: Array<{ id: string; name: string }>
-    /** Names of required custom inputs that had no value and no default. */
     missingInputs: string[]
-    /** Names of required content_selection inputs (left empty — not supported). */
-    unsupportedRequiredContentSelection: string[]
 }
 
 function normalizeKey(value: string) {
     return value.trim().toLowerCase()
-}
-
-function buildDefaultCustomValue(input: Extract<PromptInputDefinition, { type: 'custom' }>) {
-    const state = input.custom.defaultContent
-    const allowMultiple = input.custom.dropdown.allowMultiple
-    const selectedIds = allowMultiple ? state.dropdownOptionIds : state.dropdownOptionIds.slice(0, 1)
-    const options = input.custom.dropdown.options ?? []
-
-    const optionParts = selectedIds
-        .map((id) => options.find((option) => option.id === id) ?? null)
-        .filter((option): option is NonNullable<typeof option> => option !== null)
-        .map((option) => (option.content?.trim() ? option.content.trim() : option.label.trim()))
-        .filter(Boolean)
-
-    const textPart = state.text?.trim() ?? ''
-    return [...optionParts, textPart].filter((part) => part.trim()).join('\n\n').trim()
 }
 
 async function loadAgentPromptByName(ownerId: string, promptName: string) {
@@ -104,8 +32,8 @@ async function loadAgentPromptByName(ownerId: string, promptName: string) {
     const records = await prisma.prompt.findMany({ where: { ownerId } })
     const dtos = records.map(toPromptDto)
     const prompt = dtos.find((item) => normalizeKey(item.name) === wanted) ?? null
-    // Only prompts that opted into Codex call (allowAgentCall) and are not components can back a skill.
-    if (!prompt || prompt.category === 'component' || prompt.allowAgentCall !== true) return { dtos, prompt: null }
+    // Only prompts that opted into Codex call (allowAgentCall) in the scene-continuation category can be composed.
+    if (!prompt || prompt.category !== 'scene_continuation' || prompt.allowAgentCall !== true) return { dtos, prompt: null }
     return { dtos, prompt }
 }
 
@@ -120,60 +48,6 @@ async function resolveBoundGroups(ownerId: string, modelGroupIds: string[]) {
     return boundGroupIds
         .map((id) => byId.get(id) ?? null)
         .filter((group): group is { id: string; name: string } => group !== null)
-}
-
-export async function describePromptForAgent(params: {
-    ownerId: string
-    promptName: string
-}): Promise<{ ok: true; prompt: DescribedPrompt } | { ok: false; detail: string }> {
-    const loaded = await loadAgentPromptByName(params.ownerId, params.promptName)
-    if (!loaded || !loaded.prompt) {
-        return {
-            ok: false,
-            detail: `No Codex-callable prompt named "${params.promptName}" was found. The prompt must exist and have "允许 Agent 调用" enabled.`,
-        }
-    }
-    const prompt = loaded.prompt
-
-    const unsupportedRequiredContentSelection: string[] = []
-    const inputs: DescribedPromptInput[] = (prompt.inputs ?? []).map((input): DescribedPromptInput => {
-        if (input.type === 'checkbox') {
-            return {
-                name: input.name,
-                type: 'checkbox',
-                required: input.required,
-                displayName: (input.checkbox.displayName || input.name).trim(),
-                defaultChecked: input.checkbox.defaultChecked,
-            }
-        }
-        if (input.type === 'content_selection') {
-            if (input.required) unsupportedRequiredContentSelection.push(input.name)
-            return { name: input.name, type: 'content_selection', required: input.required, fillable: false }
-        }
-        return {
-            name: input.name,
-            type: 'custom',
-            required: input.required,
-            allowFreeText: Boolean(input.custom.text?.enabled),
-            allowMultiple: Boolean(input.custom.dropdown.allowMultiple),
-            dropdownOptions: (input.custom.dropdown.options ?? []).map((option) => ({
-                label: option.label,
-                content: option.content ?? '',
-            })),
-            defaultValue: buildDefaultCustomValue(input),
-        }
-    })
-
-    return {
-        ok: true,
-        prompt: {
-            name: prompt.name,
-            category: prompt.category,
-            groups: await resolveBoundGroups(params.ownerId, prompt.modelGroupIds ?? []),
-            inputs,
-            unsupportedRequiredContentSelection,
-        },
-    }
 }
 
 function toTermEntry(raw: Record<string, unknown>): TermEntry | null {
@@ -211,7 +85,7 @@ export async function composeSceneContinuation(params: {
     novelId: string
     sceneId: string
     instruction: string
-    inputs?: ComposeInputs
+    inputs?: ContinuationInputs
     afterParagraph?: string
 }): Promise<{ ok: true; result: ComposedContinuation } | { ok: false; detail: string }> {
     const loaded = await loadAgentPromptByName(params.ownerId, params.promptName)
@@ -231,36 +105,29 @@ export async function composeSceneContinuation(params: {
         return { ok: false, detail: `Scene ${params.sceneId} was not found in novel ${params.novelId}.` }
     }
 
-    const [novel, termState, chapterOutline, actOutline] = await Promise.all([
+    const [novel, termState, outlines, snippets] = await Promise.all([
         prisma.novel.findFirst({
             where: { id: params.novelId, ownerId: params.ownerId },
             select: {
                 language: true,
+                labels: { select: { id: true } },
                 termContextIncludesRelations: true,
                 termContextIncludesExperiences: true,
-                acts: { select: { number: true, title: true, summary: true } },
+                acts: { select: { number: true, title: true, summary: true, labelIdsJson: true } },
                 chapters: {
                     select: {
                         id: true,
                         title: true,
                         actNumber: true,
                         order: true,
-                        scenes: { select: { id: true, order: true, summary: true } },
+                        scenes: { select: { id: true, order: true, summary: true, content: true, labelIdsJson: true } },
                     },
                 },
             },
         }),
         prisma.novelTermState.findUnique({ where: { novelId: params.novelId }, select: { stateJson: true } }),
-        prisma.outline.findFirst({
-            where: { novelId: params.novelId, type: 'chapter', chapterId: scene.chapterId },
-            select: { content: true },
-        }),
-        scene.chapter.actNumber != null
-            ? prisma.outline.findFirst({
-                  where: { novelId: params.novelId, type: 'act', actNumber: scene.chapter.actNumber },
-                  select: { content: true },
-              })
-            : Promise.resolve(null),
+        prisma.outline.findMany({ where: { novelId: params.novelId } }),
+        prisma.snippet.findMany({ where: { novelId: params.novelId }, select: { id: true, title: true, content: true } }),
     ])
     if (!novel) {
         return { ok: false, detail: `Novel ${params.novelId} was not found.` }
@@ -282,10 +149,7 @@ export async function composeSceneContinuation(params: {
         : undefined
 
     const matcher = buildTermMentionMatcher(termEntries)
-    const instructionTermIds = resolveTrackedTermIds({
-        mentionedTermIds: findMentionedTermIds(params.instruction, matcher),
-        termsById,
-    })
+    const instructionTermIds = [...findMentionedTermIds(params.instruction, matcher)]
 
     // Scene prose + the virtual insertion split (mirrors the manual panel: paragraphs joined by '\n').
     const sceneText = htmlToText(scene.content ?? '', { paragraphSeparator: '\n' })
@@ -299,91 +163,128 @@ export async function composeSceneContinuation(params: {
         language: novel.language,
     })
 
-    const chapterOutlineText = htmlToText(chapterOutline?.content ?? '', { paragraphSeparator: '\n' }).trim()
-    const actOutlineText = htmlToText(actOutline?.content ?? '', { paragraphSeparator: '\n' }).trim()
-
-    // Input resolution: custom/checkbox from Codex values (else default); content_selection stays default.
-    const inputByKey = new Map<string, PromptInputDefinition>()
-    for (const input of prompt.inputs ?? []) {
-        const key = normalizeKey(input.name)
-        if (key) inputByKey.set(key, input)
-    }
-    const customByKey = new Map<string, string>()
-    for (const [name, value] of Object.entries(params.inputs?.custom ?? {})) {
-        if (typeof value === 'string') customByKey.set(normalizeKey(name), value)
-    }
-    const checkboxByKey = new Map<string, boolean>()
-    for (const [name, value] of Object.entries(params.inputs?.checkbox ?? {})) {
-        if (typeof value === 'boolean') checkboxByKey.set(normalizeKey(name), value)
-    }
-
-    const missingInputs: string[] = []
-    // Authoritative: any required content_selection cannot be filled by Codex (it stays empty).
-    const unsupportedRequiredContentSelection = (prompt.inputs ?? [])
-        .filter((input) => input.type === 'content_selection' && input.required)
-        .map((input) => input.name)
-
-    const resolveInput = (name: string): string | null => {
-        const input = inputByKey.get(normalizeKey(name))
-        if (!input) return null
-
-        if (input.type === 'checkbox') {
-            const key = normalizeKey(input.name)
-            const checked = checkboxByKey.has(key) ? checkboxByKey.get(key)! : input.checkbox.defaultChecked
-            return checked ? (input.checkbox.displayName || input.name).trim() : ''
-        }
-
-        if (input.type === 'content_selection') {
-            // Always default (empty); required ones are surfaced via unsupportedRequiredContentSelection above.
-            return ''
-        }
-
-        const key = normalizeKey(input.name)
-        if (customByKey.has(key)) {
-            const provided = (customByKey.get(key) ?? '').trim()
-            if (!provided && input.required) missingInputs.push(input.name)
-            return provided
-        }
-        const fallback = buildDefaultCustomValue(input)
-        if (fallback) return fallback
-        if (input.required) missingInputs.push(input.name)
-        return ''
-    }
-
+    const outlineTextByChapterId = new Map(outlines.filter((item) => item.type === 'CHAPTER' && item.chapterId).map((item) => [item.chapterId!, htmlToText(item.content, { paragraphSeparator: '\n' }).trim()]))
+    const outlineTextByActNumber = new Map(outlines.filter((item) => item.type === 'ACT' && item.actNumber != null).map((item) => [item.actNumber!, htmlToText(item.content, { paragraphSeparator: '\n' }).trim()]))
+    const chapterOutlineText = outlineTextByChapterId.get(scene.chapterId) ?? ''
+    const actOutlineText = outlineTextByActNumber.get(scene.chapter.actNumber) ?? ''
+    const labelIds = (text: string): string[] => JSON.parse(text)
+    const acts = novel.acts.map((act) => ({ ...act, labelIds: labelIds(act.labelIdsJson) }))
+    const chapters = novel.chapters.map((chapter) => ({ ...chapter, scenes: chapter.scenes.map((item) => ({ ...item, labelIds: labelIds(item.labelIdsJson) })) }))
     const componentByKey = new Map<string, (typeof dtos)[number]>()
     for (const item of dtos) {
         if (item.category !== 'component') continue
         const key = normalizeKey(item.name)
-        if (key) componentByKey.set(key, item)
+        if (key && !componentByKey.has(key)) componentByKey.set(key, item)
+    }
+    const { included } = collectIncludedComponentPrompts({
+        rootMessages: prompt.messages,
+        resolveComponentByNameKey: (key) => componentByKey.get(key) ?? null,
+    })
+    const inputByKey = indexPromptInputs([
+        ...prompt.inputs,
+        ...included.flatMap((item) => item.prompt.inputs),
+    ])
+    const custom = new Map(Object.entries(params.inputs?.custom ?? {}).map(([name, value]) => [normalizeKey(name), value]))
+    const checkbox = new Map(Object.entries(params.inputs?.checkbox ?? {}).map(([name, value]) => [normalizeKey(name), value]))
+    const selected = new Map(Object.entries(params.inputs?.contentSelection ?? {}).map(([name, value]) => [normalizeKey(name), deduplicateContentSelections(value)]))
+    for (const [values, type] of [[custom, 'custom'], [checkbox, 'checkbox'], [selected, 'content_selection']] as const) {
+        for (const name of values.keys()) {
+            if (inputByKey.get(name)?.type !== type) return { ok: false, detail: `Unknown or incorrectly typed prompt input: ${name}` }
+        }
+    }
+    for (const [name, value] of custom) {
+        const input = inputByKey.get(name)!
+        if (input.type !== 'custom') continue
+        const ids = value.dropdownOptionIds ?? []
+        const text = value.text ?? ''
+        const { dropdown, text: textConfig } = input.custom
+        if (ids.length && !dropdown.enabled) return { ok: false, detail: `${input.name} does not allow dropdown selections.` }
+        if (text && !textConfig.enabled) return { ok: false, detail: `${input.name} does not allow free text.` }
+        if (!dropdown.allowMultiple && ids.length > 1) return { ok: false, detail: `${input.name} accepts one dropdown option.` }
+        if (!dropdown.allowMultiple && ids.length && text) return { ok: false, detail: `${input.name} accepts either a dropdown option or free text, not both.` }
+        if (new Set(ids).size !== ids.length) return { ok: false, detail: `${input.name} cannot select the same dropdown option twice.` }
+        for (const id of ids) {
+            if (!dropdown.options.some((option) => option.id === id)) return { ok: false, detail: `Unknown dropdown option ID in ${input.name}: ${id}` }
+        }
+    }
+    for (const [name, refs] of selected) {
+        const input = inputByKey.get(name)!
+        if (input.type !== 'content_selection') continue
+        if (!input.contentSelection.allowMultiple && refs.length > 1) return { ok: false, detail: `${input.name} accepts one selection.` }
+        const options = input.contentSelection.options
+        for (const ref of refs) {
+            let valid = false
+            switch (ref.kind) {
+                case 'full_novel': valid = options.fullNovel.enabled; break
+                case 'act': valid = options.act.enabled && acts.some((item) => item.number === ref.actNumber); break
+                case 'chapter': valid = options.chapter.enabled && chapters.some((item) => item.id === ref.chapterId); break
+                case 'scene': valid = options.scene.enabled && chapters.some((item) => item.scenes.some((scene) => scene.id === ref.sceneId)); break
+                case 'act_outline': valid = options.outline.enabled && options.outline.act.enabled && outlineTextByActNumber.has(ref.actNumber); break
+                case 'chapter_outline': valid = options.outline.enabled && options.outline.chapter.enabled && outlineTextByChapterId.has(ref.chapterId); break
+                case 'snippet': valid = options.snippet.enabled && snippets.some((item) => item.id === ref.snippetId); break
+                case 'label': valid = options.label.enabled && novel.labels.some((item) => item.id === ref.labelId); break
+                case 'term_tag': valid = options.termTag.enabled && termEntries.some((item) => !item.archived && item.tags?.some((tag) => normalizeKey(tag) === normalizeKey(ref.tag))); break
+                case 'term': {
+                    const term = termsById.get(ref.termId)
+                    const key = term && Object.hasOwn(options.term.allowedTypes, term.categoryId) ? term.categoryId as keyof typeof options.term.allowedTypes : 'others'
+                    valid = options.term.enabled && Boolean(term && !term.archived) && options.term.allowedTypes[key]
+                    break
+                }
+            }
+            if (!valid) return { ok: false, detail: `Unavailable or disallowed selection in ${input.name}: ${JSON.stringify(ref)}` }
+        }
+    }
+    const resolveTermValue = (termId: string) =>
+        renderTermTemplateValue({
+            entry: termsById.get(termId) ?? null,
+            termsById,
+            includeRelations: novel.termContextIncludesRelations,
+            includeExperiences: novel.termContextIncludesExperiences,
+            locale: novel.language,
+            customCategories,
+        }) || null
+
+    const contentResolvers = createPromptContentResolvers({
+        getInput: (name) => {
+            const input = inputByKey.get(normalizeKey(name))
+            if (input?.type !== 'content_selection') return null
+            const value = normalizePromptInputValue(input, selected.get(normalizeKey(name)) ?? [])
+            return { input, selections: value.kind === 'content_selection' ? value.selections : [] }
+        },
+        resources: {
+            acts, chapters, chaptersById: new Map(chapters.map((chapter) => [chapter.id, chapter])),
+            scenesById: new Map(chapters.flatMap((chapter) => chapter.scenes.map((item) => [item.id, item] as const))),
+            novelOutlineFull: outline.full, outlineTextByActNumber, outlineTextByChapterId,
+        },
+        termsById, snippets, resolveTermValue, locale: novel.language,
+    })
+    const resolveInput = (name: string): string | null => {
+        const key = normalizeKey(name)
+        const input = inputByKey.get(key)
+        if (!input) return null
+        if (input.type === 'content_selection') return contentResolvers.resolveValue(name)
+        if (input.type === 'checkbox') return (checkbox.get(key) ?? input.checkbox.defaultChecked) ? (input.checkbox.displayName || input.name).trim() : ''
+        const value = normalizePromptInputValue(input, custom.get(key))
+        return value.kind === 'custom' ? renderPromptCustomInputValue(input, value) : ''
     }
     const resolveInclude = (name: string): string | null => {
         const component = componentByKey.get(normalizeKey(name))
         return component?.messages?.[0]?.content ?? null
     }
+    const referencedInputs = new Set([prompt, ...included.map((item) => item.prompt)]
+        .flatMap((item) => extractStringArgCallsFromMessages(item.messages, 'input')).map(normalizeKey))
+    const missingInputs = [...referencedInputs].flatMap((key) => {
+        const input = inputByKey.get(key)
+        return input?.required && !resolveInput(input.name)?.trim() ? [input.name] : []
+    })
 
     const resolvers: PromptTemplateRenderResolvers = {
         resolveInput,
         resolveInclude,
-        // content_selection is always empty in this path, so these return nothing.
-        resolveInputTermIds: () => [],
-        resolveInputTermTagTermIds: () => [],
-        resolveInputSnippets: () => [],
-        resolveInputFullNovels: () => [],
-        resolveInputActs: () => [],
-        resolveInputChapters: () => [],
-        resolveInputScenes: () => [],
-        resolveInputActOutlines: () => [],
-        resolveInputChapterOutlines: () => [],
+        ...contentResolvers.resolvers,
+        resolveTextTermIds: (text) => [...findMentionedTermIds(text, matcher)],
         resolveTermText: (termId) => renderTermTemplateText(termsById.get(termId) ?? null) || null,
-        resolveTermValue: (termId) =>
-            renderTermTemplateValue({
-                entry: termsById.get(termId) ?? null,
-                termsById,
-                includeRelations: novel.termContextIncludesRelations,
-                includeExperiences: novel.termContextIncludesExperiences,
-                locale: novel.language,
-                customCategories,
-            }) || null,
+        resolveTermValue,
     }
 
     const context = {
@@ -412,12 +313,7 @@ export async function composeSceneContinuation(params: {
     }))
 
     const groups = await resolveBoundGroups(params.ownerId, prompt.modelGroupIds ?? [])
-    const markdown = buildConversationMarkdown({
-        promptName: prompt.name,
-        groups,
-        sceneRef: `${scene.chapter.id}:${scene.id}`,
-        blocks: renderedBlocks,
-    })
+    const markdown = continuationConversationMarkdown(renderedBlocks.map((block) => ({ role: block.role, content: block.text })))
 
     return {
         ok: true,
@@ -426,38 +322,6 @@ export async function composeSceneContinuation(params: {
             promptName: prompt.name,
             groups,
             missingInputs: [...new Set(missingInputs)],
-            unsupportedRequiredContentSelection: [...new Set(unsupportedRequiredContentSelection)],
         },
     }
-}
-
-function buildConversationMarkdown(params: {
-    promptName: string
-    groups: Array<{ id: string; name: string }>
-    sceneRef: string
-    blocks: Array<{ role: string; text: string }>
-}) {
-    const groupsLine = params.groups.length > 0
-        ? `groups: ${params.groups
-              .map((group, index) => `${group.id} (${group.name})${index === 0 ? ' (default)' : ''}`)
-              .join(', ')}`
-        : 'groups: (none — 调用 run_llm 时用用户 @ 的模型组)'
-
-    const header = [
-        '<!-- onw-continuation-prompt',
-        `prompt: ${params.promptName}`,
-        groupsLine,
-        `scene: ${params.sceneRef}`,
-        '-->',
-        '',
-        `> 这是提示词「${params.promptName}」按给定 instruction 和输入拼好的对话草稿，可直接 run_llm。`,
-        '',
-    ].join('\n')
-
-    const body = params.blocks
-        .filter((block) => block.text)
-        .map((block) => `## ${block.role}\n\n${block.text}`)
-        .join('\n\n')
-
-    return `${header}\n${body}\n`
 }

@@ -20,11 +20,9 @@ import {
 
 import {
     ApiError,
-    promptApi,
     skillApi,
     skillPresetApi,
     type BuiltinSkillPreset,
-    type Prompt,
     type Skill,
 } from '@/lib/api'
 import { normalizeSkillCategory, type SkillCategory } from '@/lib/skills'
@@ -187,7 +185,6 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
     const [searchQuery, setSearchQuery] = useState('')
     const [draftContent, setDraftContent] = useState('')
     const [draftCategory, setDraftCategory] = useState<SkillCategory | null>(null)
-    const [draftPrompt, setDraftPrompt] = useState('')
     const [directoryBrowserOpen, setDirectoryBrowserOpen] = useState(false)
     // Tracks which skill `draftContent` currently belongs to. Unlike a ref, this state value is
     // captured per-render, so it stays "stale" during the transitional render right after the
@@ -196,8 +193,6 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
     const [draftSkillId, setDraftSkillId] = useState<string | null>(null)
     const [saveState, setSaveState] = useState<SaveState>('idle')
     const [isEditingName, setIsEditingName] = useState(false)
-    const [prompts, setPrompts] = useState<Prompt[]>([])
-    const [promptsLoaded, setPromptsLoaded] = useState(false)
 
     const [builtinPresets, setBuiltinPresets] = useState<BuiltinSkillPreset[]>([])
     const [builtinPresetsLoading, setBuiltinPresetsLoading] = useState(true)
@@ -219,12 +214,11 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
 
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const latestDraftRef = useRef('')
-    const latestMetadataRef = useRef<{ category: SkillCategory | null; prompt: string }>({ category: null, prompt: '' })
+    const latestMetadataRef = useRef<{ category: SkillCategory | null }>({ category: null })
     const lastSavedContentRef = useRef<{
         id: string
         content: string
         category: SkillCategory
-        prompt: string
     } | null>(null)
     const saveRequestIdRef = useRef(0)
     const hasRestoredViewStateRef = useRef(false)
@@ -262,24 +256,6 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
     useEffect(() => {
         void loadSkills()
     }, [loadSkills])
-
-    useEffect(() => {
-        let cancelled = false
-        void (async () => {
-            try {
-                const { prompts: list } = await promptApi.list()
-                if (!cancelled) {
-                    setPrompts(list)
-                    setPromptsLoaded(true)
-                }
-            } catch {
-                if (!cancelled) setPrompts([])
-            }
-        })()
-        return () => {
-            cancelled = true
-        }
-    }, [])
 
     const loadBuiltinPresets = useCallback(async () => {
         setBuiltinPresetsLoading(true)
@@ -380,62 +356,17 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
         [draftContent, selectedSkill?.description]
     )
     // The textarea edits only the body. Official SKILL.md frontmatter (name/description) is hidden;
-    // ONW-only category/prompt metadata is edited separately and stored in onw.json.
+    // ONW-only category metadata is edited separately and stored in onw.json.
     const draftSkillBody = useMemo(() => extractSkillBodyFromMarkdown(draftContent), [draftContent])
-    // A skill can only bind a prompt from its own category — no cross-category selection.
     const draftSkillCategory = draftCategory
-    const draftSkillPrompt = draftPrompt
-    const promptOptions = useMemo(
-        () =>
-            [...prompts]
-                .filter(
-                    (prompt) =>
-                        prompt.category !== 'component'
-                        && prompt.allowAgentCall === true
-                        && (!draftSkillCategory || prompt.category === draftSkillCategory)
-                )
-                .sort((a, b) => a.name.localeCompare(b.name)),
-        [draftSkillCategory, prompts]
-    )
-
-    // Names of every prompt the user owns (case-insensitive) — used to detect skills whose bound prompt
-    // no longer exists (deleted or renamed). Only meaningful once the prompt list has actually loaded.
-    const promptNameSet = useMemo(() => new Set(prompts.map((prompt) => prompt.name.trim().toLowerCase())), [prompts])
-    const isPromptNameMissing = useCallback(
-        (promptName: string | null | undefined) => {
-            const name = promptName?.trim()
-            if (!name) return false
-            return promptsLoaded && !promptNameSet.has(name.toLowerCase())
-        },
-        [promptNameSet, promptsLoaded]
-    )
-    const draftPromptMissing = useMemo(() => isPromptNameMissing(draftSkillPrompt), [draftSkillPrompt, isPromptNameMissing])
-
-    // A skill that binds a now-missing prompt can't run, so default it to disabled (and surface why).
-    useEffect(() => {
-        if (!promptsLoaded) return
-        const broken = skills.filter((skill) => skill.enabled && isPromptNameMissing(skill.prompt))
-        if (broken.length === 0) return
-        void (async () => {
-            for (const skill of broken) {
-                try {
-                    const { skill: updated } = await skillApi.setEnabled(skill.id, false)
-                    setSkills((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
-                } catch (err) {
-                    console.error(err)
-                }
-            }
-        })()
-    }, [isPromptNameMissing, promptsLoaded, skills])
 
     useEffect(() => {
         if (!selectedSkill) {
             setDraftContent('')
             setDraftCategory(null)
-            setDraftPrompt('')
             setDraftSkillId(null)
             latestDraftRef.current = ''
-            latestMetadataRef.current = { category: null, prompt: '' }
+            latestMetadataRef.current = { category: null }
             setSaveState('idle')
             lastSavedContentRef.current = null
             setIsEditingName(false)
@@ -444,18 +375,15 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
 
         const normalizedContent = normalizeSkillDraftContent(selectedSkill.content)
         const category = normalizeSkillCategory(selectedSkill.category)
-        const prompt = selectedSkill.prompt?.trim() ?? ''
         setDraftContent(normalizedContent)
         setDraftCategory(category)
-        setDraftPrompt(prompt)
         setDraftSkillId(selectedSkill.id)
         latestDraftRef.current = normalizedContent
-        latestMetadataRef.current = { category, prompt }
+        latestMetadataRef.current = { category }
         lastSavedContentRef.current = {
             id: selectedSkill.id,
             content: normalizedContent,
             category: category ?? 'ai_chat',
-            prompt,
         }
         setSaveState('idle')
 
@@ -467,8 +395,8 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
     }, [draftContent])
 
     useEffect(() => {
-        latestMetadataRef.current = { category: draftCategory, prompt: draftPrompt }
-    }, [draftCategory, draftPrompt])
+        latestMetadataRef.current = { category: draftCategory }
+    }, [draftCategory])
 
     const getSkillNameError = useCallback((content: string) => {
         const name = extractSkillNameFromMarkdown(content)?.trim() ?? ''
@@ -495,7 +423,6 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
         if (
             draftContent === lastSaved.content
             && draftCategory === lastSaved.category
-            && draftPrompt === lastSaved.prompt
         ) return
         if (!draftCategory) return
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -525,31 +452,26 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
                 const { skill } = await skillApi.update(previousSkillId, {
                     content: draftContent,
                     category: draftCategory,
-                    prompt: draftPrompt.trim() || null,
                 })
 
                 if (requestId !== saveRequestIdRef.current) return
                 if (latestDraftRef.current !== draftContent) return
                 if (
                     latestMetadataRef.current.category !== draftCategory
-                    || latestMetadataRef.current.prompt !== draftPrompt
                 ) return
 
                 setSkills((prev) => prev.map((item) => (item.id === previousSkillId ? skill : item)))
                 setSelectedSkillId((prev) => (prev === previousSkillId ? skill.id : prev))
                 const savedCategory = normalizeSkillCategory(skill.category) ?? draftCategory
-                const savedPrompt = skill.prompt?.trim() ?? ''
                 lastSavedContentRef.current = {
                     id: skill.id,
                     content: skill.content,
                     category: savedCategory,
-                    prompt: savedPrompt,
                 }
                 setDraftContent(skill.content)
                 setDraftCategory(savedCategory)
-                setDraftPrompt(savedPrompt)
                 latestDraftRef.current = skill.content
-                latestMetadataRef.current = { category: savedCategory, prompt: savedPrompt }
+                latestMetadataRef.current = { category: savedCategory }
                 setError(null)
 
                 const category = normalizeSkillCategory(skill.category)
@@ -580,7 +502,7 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
         return () => {
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
         }
-    }, [draftCategory, draftContent, draftPrompt, draftSkillId, editorReadOnly, getSkillNameError, isEditingName, selectedSkill, t])
+    }, [draftCategory, draftContent, draftSkillId, editorReadOnly, getSkillNameError, isEditingName, selectedSkill, t])
 
     const filteredSkills = useMemo(() => {
         const normalized = searchQuery.trim().toLowerCase()
@@ -640,12 +562,6 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
     const handleSetEnabled = useCallback(async (skill: Skill, enabled: boolean) => {
         if (skill.enabled === enabled) return
 
-        // Refuse to enable a skill whose bound prompt no longer exists — it can't run.
-        if (enabled && isPromptNameMissing(skill.prompt)) {
-            setError(t('errors.missingPromptCannotEnable'))
-            return
-        }
-
         try {
             setError(null)
             // Enabled state lives outside SKILL.md: toggling adds/removes the CODEX_HOME symlink.
@@ -654,24 +570,21 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
             if (selectedSkillId === skill.id) {
                 const normalizedContent = normalizeSkillDraftContent(updated.content)
                 const updatedCategory = normalizeSkillCategory(updated.category) ?? 'ai_chat'
-                const updatedPrompt = updated.prompt?.trim() ?? ''
                 setDraftContent(normalizedContent)
                 setDraftCategory(updatedCategory)
-                setDraftPrompt(updatedPrompt)
                 latestDraftRef.current = normalizedContent
-                latestMetadataRef.current = { category: updatedCategory, prompt: updatedPrompt }
+                latestMetadataRef.current = { category: updatedCategory }
                 lastSavedContentRef.current = {
                     id: updated.id,
                     content: normalizedContent,
                     category: updatedCategory,
-                    prompt: updatedPrompt,
                 }
             }
         } catch (err) {
             console.error(err)
             setError(err instanceof Error ? err.message : t('errors.saveFailed'))
         }
-    }, [isPromptNameMissing, selectedSkillId, t])
+    }, [selectedSkillId, t])
 
     const handleDelete = useCallback(async () => {
         if (!selectedSkill) return
@@ -1166,47 +1079,7 @@ export function MiddlePanelSkills({ novelId }: MiddlePanelSkillsProps) {
                                 </DropdownMenu>
                             </div>
 
-                            <div className="mt-2 flex items-center gap-3">
-                                <div className="shrink-0 text-sm font-medium">{t('editor.associatedPrompt')}</div>
-                                <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                        <Button variant="outline" size="sm" className="min-w-[180px] justify-between gap-2" disabled={editorReadOnly}>
-                                            <span className="truncate">
-                                                {draftSkillPrompt || t('editor.associatedPromptNone')}
-                                            </span>
-                                            <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
-                                        </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="start" className="max-h-72 w-64 overflow-y-auto">
-                                        <DropdownMenuItem
-                                            onClick={() => {
-                                                setError(null)
-                                                setDraftPrompt('')
-                                            }}
-                                        >
-                                            {t('editor.associatedPromptNone')}
-                                        </DropdownMenuItem>
-                                        {promptOptions.map((prompt) => (
-                                            <DropdownMenuItem
-                                                key={prompt.id}
-                                                onClick={() => {
-                                                    setError(null)
-                                                    setDraftPrompt(prompt.name)
-                                                }}
-                                            >
-                                                <span className="truncate">{prompt.name}</span>
-                                            </DropdownMenuItem>
-                                        ))}
-                                    </DropdownMenuContent>
-                                </DropdownMenu>
-                            </div>
-                            <p className="mt-1 text-xs text-muted-foreground">{t('editor.associatedPromptHint')}</p>
 
-                            {draftPromptMissing && (
-                                <div className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                                    {t('editor.missingPromptNotice', { prompt: draftSkillPrompt })}
-                                </div>
-                            )}
                         </div>
 
                         <Separator />

@@ -15,6 +15,7 @@ const messages: CodexSessionMessage[] = [
     { id: 'reply-1', role: 'assistant', content: 'The chapter is ready.', attachments: ['/uploads/result.png'], createdAt: tool.createdAt },
 ]
 const record = {
+    continuationPanelId: null,
     id: 'session-1', category: 'general', title: 'Review', titleManuallyEdited: false,
     reviewLevel: 'user_review', modelId: 'gpt-6-astra', reasoningEffort: 'high', serviceTier: 'standard',
     composerMode: 'default', goalJson: null, codexThreadId: null, codexConnectionId: null,

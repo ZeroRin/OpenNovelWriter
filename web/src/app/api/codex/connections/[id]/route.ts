@@ -26,7 +26,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     const connection = await getOwnedConnection(user.userId, id)
     if (!connection) return NextResponse.json({ detail: 'Not found' }, { status: 404 })
 
-    if (connection.providerType === 'custom') await syncCodexConnectionRuntimeFiles(connection)
+    await syncCodexConnectionRuntimeFiles(connection)
     const files = await readCodexConnectionFiles(user.userId, connection.id)
     let configToml = files.configToml
     if (connection.isActive) {
@@ -82,6 +82,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
                 authJson: typeof body?.authJson === 'string' ? body.authJson : undefined,
                 configToml: typeof body?.configToml === 'string' ? body.configToml : undefined,
             })
+            await syncCodexConnectionRuntimeFiles(updated)
             updated = await syncCodexConnectionAuthState({ connectionId: id, ownerId: user.userId, codexHome: files.home })
         }
         if (updated.isActive) {

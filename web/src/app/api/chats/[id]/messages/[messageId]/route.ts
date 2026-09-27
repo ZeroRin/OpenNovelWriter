@@ -1,3 +1,4 @@
+import { editChatUserMessage } from '@/lib/ai-chat-messages'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getCurrentUser } from '@/lib/auth'
@@ -54,7 +55,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         const conversation = await prisma.$transaction(async (tx) => {
             await tx.editorChatMessage.update({
                 where: { id: messageId },
-                data: { content },
+                data: editChatUserMessage({
+                    ...target,
+                    role: target.role as 'user' | 'assistant',
+                    renderState: serializeEditorChatConversation(existing).messages.find((message) => message.id === messageId)?.renderState,
+                }, content),
             })
 
             return tx.editorChatConversation.update({

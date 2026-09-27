@@ -14,7 +14,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import { Ban, BookText, MapPin, MoreHorizontal, Search, Shapes, UserRound } from 'lucide-react'
-import { isDefaultTermCategoryId, selectionKey } from '@/components/editor/prompt-inputs-editor/utils'
+import { isDefaultTermCategoryId } from '@/components/editor/prompt-inputs-editor/utils'
+import { selectionKey } from '@/lib/prompt-inputs'
 import { getTermEntryColorClasses, getTermEntryColorId } from '@/components/editor/terms/term-entry-colors'
 import type { PreviewContentSelectionSectionProps } from '@/components/editor/prompt-inputs-editor/preview-content-selection-shared'
 

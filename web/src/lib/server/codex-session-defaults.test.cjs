@@ -18,6 +18,7 @@ function createRoute(connection, customFastModeEnabled = false) {
         '@/lib/db': { getPrismaClient: () => ({
             novel: { findFirst: async () => ({ id: 'novel', codexSessionAutoCleanup: false, codexCustomFastModeEnabled: customFastModeEnabled }) },
             codexConnection: { findFirst: async () => connection },
+            sceneContinuationDraft: { findFirst: async () => ({ panelId: 'panel' }), update: async () => ({}) },
             codexSession: { create: async ({ data }) => ({ ...data, id: 'session' }) },
         }) },
     }
@@ -36,7 +37,7 @@ for (const providerType of ['openai-official', 'custom']) {
         test(`${providerType} GPT ${category} session uses the requested model defaults`, async () => {
             const route = createRoute({ id: 'connection', providerType, defaultModelId: 'gpt-5.6-sol' })
             const response = await route.POST(new Request('http://localhost/sessions', {
-                method: 'POST', body: JSON.stringify({ category }),
+                method: 'POST', body: JSON.stringify({ category, ...(category === 'scene_continuation' ? { panelId: 'panel' } : {}) }),
             }), { params: Promise.resolve({ id: 'novel' }) })
             assert.equal(response.status, 201)
             const { session } = await response.json()
@@ -50,7 +51,7 @@ for (const category of ['general', 'scene_operation']) {
     test(`non-GPT ${category} session keeps its configured model and effort behavior`, async () => {
         const route = createRoute({ id: 'connection', providerType: 'custom', defaultModelId: 'deepseek-v4-pro' })
         const response = await route.POST(new Request('http://localhost/sessions', {
-            method: 'POST', body: JSON.stringify({ category }),
+            method: 'POST', body: JSON.stringify({ category, ...(category === 'scene_continuation' ? { panelId: 'panel' } : {}) }),
         }), { params: Promise.resolve({ id: 'novel' }) })
         assert.equal(response.status, 201)
         const { session } = await response.json()

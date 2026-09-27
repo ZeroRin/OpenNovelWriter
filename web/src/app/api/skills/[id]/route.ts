@@ -48,21 +48,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         const body = await request.json().catch(() => null)
         const content = typeof body?.content === 'string' ? body.content : ''
         const category = normalizeSkillCategory(body?.category)
-        const prompt = body?.prompt === null
-            ? null
-            : typeof body?.prompt === 'string'
-                ? body.prompt.trim() || null
-                : undefined
         if (!content.trim()) {
             return NextResponse.json({ detail: 'Content is required' }, { status: 400 })
         }
         if (!category) {
             return NextResponse.json({ detail: 'A valid category is required' }, { status: 400 })
         }
-        if (prompt === undefined) {
-            return NextResponse.json({ detail: 'prompt must be a string or null' }, { status: 400 })
-        }
-
         // Skills cloned from an official preset are read-only unless preset authoring is enabled.
         // The check is against the on-disk origin marker, so a client can't unlock by editing the
         // `presetId` frontmatter in the payload — they must clone the skill first.
@@ -79,7 +70,6 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
             skillId: id,
             content,
             category,
-            prompt,
         })
         await syncActiveCodexConnectionSkills(user.userId)
 

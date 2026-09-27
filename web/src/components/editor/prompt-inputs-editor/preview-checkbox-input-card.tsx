@@ -27,6 +27,7 @@ export function PreviewCheckboxInputCard({
             collapsible={input.collapsed}
             expandLabel={t('advanced.inputs.expand')}
             collapseLabel={t('advanced.inputs.collapse')}
+            disabled={model.disabled}
         >
             <label className="flex items-center gap-2 rounded-md bg-muted/20 px-3 py-2 text-sm">
                 <input

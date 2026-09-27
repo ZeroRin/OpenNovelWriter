@@ -290,4 +290,6 @@ If you deploy with pm2, systemd, Docker, or another process manager, restart the
 
 ## Acknowledgements
 
+Thanks to [@ZeroRin](https://github.com/ZeroRin) for proposing OpenCode Go support and contributing the initial implementation in [#1](https://github.com/vibe-creator-art/OpenNovelWriter/pull/1).
+
 Thanks to [CC Switch](https://github.com/farion1231/cc-switch), whose code and model catalog informed OpenNovelWriter's Codex connection switching and DeepSeek model configuration.

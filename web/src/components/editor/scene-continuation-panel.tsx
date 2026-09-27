@@ -1,11 +1,13 @@
 'use client'
 
+import { continuationInputsFromValues, type ContinuationPromptSnapshot } from '@/lib/continuation-prompt'
+import { registerContinuationPanelSave } from '@/lib/continuation-panel-sync'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Brain, Check, ChevronDown, ChevronRight, ChevronUp, Eye, EyeOff, FileText, Heart, Loader2, PenLine, ScrollText, Sparkles, Trash2 } from 'lucide-react'
+import { Brain, Check, ChevronDown, ChevronRight, Eye, EyeOff, FileText, Heart, Loader2, PenLine, ScrollText, Sparkles, Trash2 } from 'lucide-react'
 import { ModelGroupLogoIcon } from '@/components/ai/model-group-logo-icon'
-import { PreviewInputCard } from '@/components/editor/prompt-inputs-editor/preview-input-card'
-import { useInputsEditorModel } from '@/components/editor/prompt-inputs-editor/model'
+import { PreviewInputList } from '@/components/editor/prompt-inputs-editor/preview-input-list'
+import { useInputsEditorModel, type PersistedInputsEditorPreviewState } from '@/components/editor/prompt-inputs-editor/model'
 import { TermMentionPreviewPopover } from '@/components/editor/terms/term-mention-preview-popover'
 import { TermMentionsHighlightTextarea } from '@/components/editor/terms/term-mentions-highlight-textarea'
 import { getTermEntryColorClasses, getTermEntryColorId } from '@/components/editor/terms/term-entry-colors'
@@ -23,13 +25,12 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import type { ModelGroup } from '@/lib/ai-store'
-import { continuationDraftApi, promptApi, skillApi, type ChapterWithScenes, type Novel, type Prompt, type PromptDefaultSelection, type Scene } from '@/lib/api'
+import { continuationDraftApi, promptApi, type ChapterWithScenes, type Novel, type Prompt, type PromptDefaultSelection, type Scene } from '@/lib/api'
 import { useEditorCodexStore } from '@/components/editor/editor-codex-store'
 import { getAvailableModelAssignments, runModelGroupWithFallback } from '@/lib/ai-runner'
 import { PROMPTS_CHANGED_EVENT } from '@/lib/prompt-events'
 import { MODEL_GROUPS_CHANGED_EVENT } from '@/lib/model-group-events'
 import { invalidateSceneContinuationMenuDataCache, loadSceneContinuationMenuData } from '@/lib/scene-continuation-menu-data'
-import { resolveTrackedTermIds } from '@/lib/term-template'
 import { cn } from '@/lib/utils'
 import { useWriteFormatStore, type WriteAiOutputStyle } from '@/components/editor/write-format-store'
 
@@ -343,8 +344,6 @@ export function SceneContinuationPanel({
     chapterTitle,
     sceneId,
     panelId,
-    skillId,
-    codexSessionId,
     scenes,
     localEdits,
     ensureComponentPrompts,
@@ -353,7 +352,6 @@ export function SceneContinuationPanel({
     termEntries,
     onApplyContinuation,
     onOpenRightSidebar,
-    onSetCodexSessionId,
     onClose,
 }: {
     novelId?: string
@@ -361,8 +359,6 @@ export function SceneContinuationPanel({
     chapterTitle?: string
     sceneId: string
     panelId?: string
-    skillId?: string
-    codexSessionId?: string
     scenes: Scene[]
     localEdits: Record<string, string>
     ensureComponentPrompts: () => Promise<Prompt[]>
@@ -371,15 +367,14 @@ export function SceneContinuationPanel({
     termEntries: TermEntry[]
     onApplyContinuation: (sceneId: string, continuation: string) => void
     onOpenRightSidebar?: () => void
-    onSetCodexSessionId?: (sessionId: string) => void
     onClose: () => void
 }) {
-    // Skill mode: this panel is driven by a Codex session (it pre-assembles the prompt and writes
-    // the result back into the shared draft) instead of the user running a model group directly.
-    const isSkillMode = Boolean(skillId)
-    // Once a session exists the config above is frozen (it was already handed to Codex); only the
-    // draft below stays interactive, plus a shortcut to open the session in the right panel.
-    const isSent = isSkillMode && Boolean(codexSessionId)
+    const [codexSessionId, setCodexSessionId] = useState<string | null>(null)
+    const [lockedSnapshot, setLockedSnapshot] = useState<ContinuationPromptSnapshot | null>(null)
+    const [draftLoaded, setDraftLoaded] = useState(!panelId || !novelId)
+    const snapshotRef = useRef<ContinuationPromptSnapshot | null>(null)
+    const savedSnapshotRef = useRef<string | null>(null)
+    const discardingRef = useRef(false)
     const tEditor = useTranslations('editor')
     const tCommon = useTranslations('common')
     const tPrompts = useTranslations('prompts')
@@ -415,19 +410,9 @@ export function SceneContinuationPanel({
     const [mentionPreview, setMentionPreview] = useState<{ termId: string; anchorEl: HTMLElement } | null>(null)
     const generateAbortRef = useRef<AbortController | null>(null)
     const lastSyncedOutputTextRef = useRef('')
-    // Skill-mode extras: the small free-text ask handed to Codex, and send-in-flight state.
-    const [skillName, setSkillName] = useState('')
-    // In skill mode the panel renders the skill's bound prompt (by name), not the default one.
-    const [skillBoundPrompt, setSkillBoundPrompt] = useState<Prompt | null>(null)
-    const [codexInstruction, setCodexInstruction] = useState('')
     const [sending, setSending] = useState(false)
     const [sendError, setSendError] = useState<string | null>(null)
-    // Whether the (read-only) config is expanded for copying after it was handed to Codex.
-    const [sentConfigExpanded, setSentConfigExpanded] = useState(false)
-    // Lock the config the moment it is handed to Codex — both while the turn is in flight
-    // (sending, before a session id exists) and once the session is attached. The author can
-    // still expand it read-only to copy what was sent.
-    const isLocked = isSkillMode && (sending || Boolean(codexSessionId))
+    const isLocked = !draftLoaded || sending || Boolean(codexSessionId)
 
     useEffect(() => {
         safeSetLocalStorage(
@@ -519,23 +504,7 @@ export function SceneContinuationPanel({
 
     const termEntriesById = useMemo(() => new Map(termEntries.map((entry) => [entry.id, entry])), [termEntries])
     const detectedTermIds = useMemo(() => findMentionedTermIds(draft, termMentionMatcher), [draft, termMentionMatcher])
-    const detectedTermEntries = useMemo(() => {
-        const usedEntries = [...detectedTermIds]
-            .map((id) => termEntriesById.get(id) ?? null)
-            .filter((entry): entry is TermEntry => entry !== null)
-
-        usedEntries.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
-        return usedEntries
-    }, [detectedTermIds, termEntriesById])
-    const instructionTermIds = useMemo(
-        () =>
-            resolveTrackedTermIds({
-                mentionedTermIds: detectedTermIds,
-                termsById: termEntriesById,
-            }),
-        [detectedTermIds, termEntriesById]
-    )
-
+    const instructionTermIds = useMemo(() => [...detectedTermIds], [detectedTermIds])
     const handleTermMentionClick = useCallback((termId: string, anchorEl: HTMLElement) => {
         setMentionPreview((prev) => {
             if (prev?.termId === termId && prev.anchorEl === anchorEl) return null
@@ -555,14 +524,12 @@ export function SceneContinuationPanel({
             : null
 
     const selectedPrompt = useMemo(() => {
-        // Skill mode is driven by the skill's bound prompt, ignoring the default-prompt picker.
-        if (isSkillMode) return skillBoundPrompt
         if (!Array.isArray(prompts) || prompts.length === 0) return null
         if (promptSelection.type === 'default') {
             return defaultPrompt ?? prompts[0] ?? null
         }
         return prompts.find((prompt) => prompt.id === promptSelection.promptId) ?? defaultPrompt ?? prompts[0] ?? null
-    }, [defaultPrompt, isSkillMode, promptSelection, prompts, skillBoundPrompt])
+    }, [defaultPrompt, promptSelection, prompts])
 
     const isUsingDefaultPrompt = promptSelection.type === 'default' && !!defaultPrompt
     const otherPrompts = useMemo(() => {
@@ -573,59 +540,62 @@ export function SceneContinuationPanel({
         return prompts.filter((prompt) => !excludedIds.has(prompt.id))
     }, [defaultSelection?.promptId, promptSelection, prompts])
 
-    const promptGroups = useMemo(() => getPromptGroups(selectedPrompt, groups), [groups, selectedPrompt])
+    const promptName = lockedSnapshot?.promptName ?? selectedPrompt?.name ?? ''
+    const promptGroups = useMemo(() => lockedSnapshot
+        ? lockedSnapshot.modelGroupIds.flatMap((id) => groups?.find((group) => group.id === id) ?? [])
+        : getPromptGroups(selectedPrompt, groups), [groups, lockedSnapshot, selectedPrompt])
     const runnableGroups = useMemo(
         () => promptGroups.filter((group) => getAvailableModelAssignments(group).length > 0),
         [promptGroups]
     )
     const selectedGroup = useMemo(
-        () =>
+        () => lockedSnapshot ? promptGroups[0] ?? null :
             runnableGroups.find((group) => group.id === selectedGroupId) ??
             runnableGroups[0] ??
             promptGroups.find((group) => group.id === selectedGroupId) ??
             promptGroups[0] ??
             null,
-        [promptGroups, runnableGroups, selectedGroupId]
+        [lockedSnapshot, promptGroups, runnableGroups, selectedGroupId]
     )
 
     useEffect(() => {
-        if (!selectedPrompt) return
+        if (!selectedPrompt || lockedSnapshot) return
         if (promptGroups.some((group) => group.id === selectedGroupId)) return
         setSelectedGroupId(runnableGroups[0]?.id ?? promptGroups[0]?.id ?? '')
-    }, [promptGroups, runnableGroups, selectedGroupId, selectedPrompt])
-
-    useEffect(() => {
-        // Skill-mode drafts are shared/persistent (DB + Codex), not tied to a local generation run,
-        // so switching the resolved prompt must not wipe them.
-        if (isSkillMode) return
-        if (!selectedPrompt) return
-        if (outputPromptId === selectedPrompt.id) return
-
-        setOutputPromptId(null)
-        setResultText('')
-        setReasoningText('')
-        setContentDraft('')
-        setPlanningDraft('')
-        lastSyncedOutputTextRef.current = ''
-    }, [isSkillMode, outputPromptId, selectedPrompt])
+    }, [lockedSnapshot, promptGroups, runnableGroups, selectedGroupId, selectedPrompt])
 
     const previewStateStorageKey = useMemo(
         () => (selectedPrompt ? `${storageKey}.preview.${selectedPrompt.id}` : null),
         [selectedPrompt, storageKey]
     )
-    const instructionText = draft.trim()
+    const lockedPreviewState = useMemo(() => {
+        if (!lockedSnapshot) return undefined
+        const state: PersistedInputsEditorPreviewState = {
+            customPreviewStateByInputId: {}, contentSelectionPreviewStateByInputId: {}, checkboxPreviewCheckedByInputId: {},
+            previewSceneIdOverride: sceneId,
+        }
+        for (const input of lockedSnapshot.inputDefinitions) {
+            const value = lockedSnapshot.inputValues[input.name]
+            if (value?.kind === 'custom') state.customPreviewStateByInputId![input.id] = value
+            else if (value?.kind === 'content_selection') state.contentSelectionPreviewStateByInputId![input.id] = value
+            else if (value?.kind === 'checkbox') state.checkboxPreviewCheckedByInputId![input.id] = value.checked
+        }
+        return state
+    }, [lockedSnapshot, sceneId])
+    const instructionText = lockedSnapshot?.instruction ?? draft.trim()
     const model = useInputsEditorModel({
-        inputDefinitions: selectedPrompt?.inputs ?? [],
+        inputDefinitions: lockedSnapshot?.inputDefinitions ?? selectedPrompt?.inputs ?? [],
         disabled: generating || isLocked,
         onInputDefinitionsChange: () => undefined,
-        messages: selectedPrompt?.messages ?? [],
+        messages: lockedSnapshot ? [] : selectedPrompt?.messages ?? [],
         promptId: selectedPrompt?.id,
         promptCategory: String(selectedPrompt?.category ?? 'scene_continuation'),
         allPrompts: componentPrompts ?? undefined,
         novelId,
         chapters,
         sceneContinuationPanelId: panelId ?? null,
-        previewStateStorageKey,
+        previewStateStorageKey: lockedSnapshot ? null : previewStateStorageKey,
+        persistedPreviewState: lockedPreviewState,
         instructionTerms: instructionTermIds,
         instructionText,
     })
@@ -648,17 +618,24 @@ export function SceneContinuationPanel({
     )
 
     const previewModel = useMemo(() => {
-        return { ...model, renderedMessages: model.renderedMessages.filter((message) => message.content.trim()) }
-    }, [model])
+        if (!lockedSnapshot) return { ...model, renderedMessages: model.renderedMessages.filter((message) => message.content.trim()) }
+        return {
+            ...model,
+            renderedMessages: lockedSnapshot.messages.map((message, index) => ({ ...message, id: `snapshot-${index}` })),
+            renderedWarnings: [],
+            missingRequiredInputNames: lockedSnapshot.missingInputs,
+            renderedTermEntries: lockedSnapshot.termIds.flatMap((id) => termEntriesById.get(id) ?? []),
+        }
+    }, [lockedSnapshot, model, termEntriesById])
 
     const previewSourceId = useMemo(
-        () => `scene-continuation:${sceneId}:${panelId ?? 'panel'}:${selectedPrompt?.id ?? 'loading'}`,
-        [panelId, sceneId, selectedPrompt?.id]
+        () => `scene-continuation:${sceneId}:${panelId ?? 'panel'}:${lockedSnapshot?.promptId ?? selectedPrompt?.id ?? 'loading'}`,
+        [lockedSnapshot?.promptId, panelId, sceneId, selectedPrompt?.id]
     )
 
     const previewTitle = useMemo(
-        () => selectedPrompt?.name?.trim() || tPrompts('categories.sceneContinuation'),
-        [selectedPrompt?.name, tPrompts]
+        () => promptName.trim() || tPrompts('categories.sceneContinuation'),
+        [promptName, tPrompts]
     )
 
     useEffect(() => {
@@ -683,9 +660,17 @@ export function SceneContinuationPanel({
     // The continuation draft (content/planning) is shared with any linked Codex session, so it
     // lives in the DB rather than localStorage. Track the last value seen from/written to the DB
     // to avoid a save↔load echo.
-    const draftLoadedRef = useRef(false)
     const lastDbDraftRef = useRef<{ content: string; planning: string } | null>(null)
     const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+    const buildSnapshot = useCallback((): ContinuationPromptSnapshot => ({
+        promptId: selectedPrompt?.id ?? '', promptName: selectedPrompt?.name ?? '', instruction: instructionText,
+        inputs: continuationInputsFromValues(model.previewInputs, model.inputValues),
+        inputDefinitions: model.previewInputs, inputValues: model.inputValues,
+        termIds: model.renderedTermEntries.map((entry) => entry.id), messages: renderedMessages,
+        modelGroupIds: selectedGroup ? [selectedGroup.id, ...(selectedPrompt?.modelGroupIds ?? []).filter((id) => id !== selectedGroup.id)] : selectedPrompt?.modelGroupIds ?? [],
+        missingInputs: model.missingRequiredInputNames,
+    }), [selectedPrompt, instructionText, model.inputValues, model.previewInputs, model.renderedTermEntries, renderedMessages, selectedGroup, model.missingRequiredInputNames])
 
     useEffect(() => {
         if (!panelId || !novelId) return
@@ -694,47 +679,54 @@ export function SceneContinuationPanel({
             .get(panelId)
             .then((res) => {
                 if (cancelled) return
-                draftLoadedRef.current = true
+                setDraftLoaded(true)
                 if (res.draft) {
+                    setCodexSessionId(res.draft.codexSessionId)
+                    savedSnapshotRef.current = res.draft.promptSnapshotJson
+                    snapshotRef.current = res.draft.promptSnapshotJson ? JSON.parse(res.draft.promptSnapshotJson) : null
+                    setLockedSnapshot(res.draft.codexSessionId ? snapshotRef.current : null)
                     lastDbDraftRef.current = { content: res.draft.content, planning: res.draft.planning }
                     setContentDraft(res.draft.content)
                     setPlanningDraft(res.draft.planning)
                     lastSyncedOutputTextRef.current = res.draft.content
                 }
             })
-            .catch(() => {
-                draftLoadedRef.current = true
-            })
+            .catch((error) => { setRunError(String(error)) })
         return () => {
             cancelled = true
         }
     }, [panelId, novelId])
 
-    useEffect(() => {
-        if (!panelId || !novelId || !draftLoadedRef.current) return
+    const saveDraft = useCallback(async () => {
+        if (!panelId || !novelId || !draftLoaded || discardingRef.current) return
+        const snapshotJson = JSON.stringify(snapshotRef.current ?? buildSnapshot())
         const last = lastDbDraftRef.current
-        if (last && last.content === contentDraft && last.planning === planningDraft) return
-        if (!last && !contentDraft.trim() && !planningDraft.trim()) return
+        if (last?.content === contentDraft && last.planning === planningDraft && savedSnapshotRef.current === snapshotJson) return
         if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current)
+        await continuationDraftApi.save(panelId, {
+            novelId, sceneId, chapterId, content: contentDraft, planning: planningDraft, updatedBy: 'user',
+            ...(!codexSessionId ? { promptSnapshotJson: snapshotJson } : {}),
+        })
+        savedSnapshotRef.current = snapshotJson
+        lastDbDraftRef.current = { content: contentDraft, planning: planningDraft }
+    }, [panelId, novelId, sceneId, chapterId, contentDraft, planningDraft, buildSnapshot, codexSessionId, draftLoaded])
+    const saveDraftRef = useRef(saveDraft)
+    saveDraftRef.current = saveDraft
+    useEffect(() => {
+        if (!panelId) return
+        return registerContinuationPanelSave(panelId, () => saveDraftRef.current())
+    }, [panelId])
+    useEffect(() => {
+        if (!draftLoaded) return
+        const last = lastDbDraftRef.current
+        if (last?.content === contentDraft && last.planning === planningDraft) return
+        if (!last && !contentDraft.trim() && !planningDraft.trim()) return
         draftSaveTimerRef.current = setTimeout(() => {
-            lastDbDraftRef.current = { content: contentDraft, planning: planningDraft }
-            void continuationDraftApi
-                .save(panelId, {
-                    novelId,
-                    sceneId,
-                    chapterId,
-                    content: contentDraft,
-                    planning: planningDraft,
-                    updatedBy: 'user',
-                    ...(codexSessionId ? { codexSessionId } : {}),
-                    ...(skillId ? { skillId } : {}),
-                })
-                .catch((error) => console.error('Failed to save continuation draft:', error))
+            void saveDraftRef.current().catch((error) => setRunError(String(error)))
         }, 800)
-        return () => {
-            if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current)
-        }
-    }, [contentDraft, planningDraft, panelId, novelId, sceneId, chapterId, codexSessionId, skillId])
+        return () => { if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current) }
+    }, [contentDraft, planningDraft, draftLoaded])
+    useEffect(() => () => { void saveDraftRef.current().catch(console.error) }, [])
 
     // Pull Codex's draft writes into the panel. A value differing from what we last saw in the DB
     // is an external (Codex) change, so we apply it.
@@ -743,6 +735,8 @@ export function SceneContinuationPanel({
         try {
             const res = await continuationDraftApi.get(panelId)
             if (!res.draft) return
+            setCodexSessionId(res.draft.codexSessionId)
+            if (!res.draft.codexSessionId) setLockedSnapshot(null)
             const last = lastDbDraftRef.current
             if (!last || res.draft.content !== last.content || res.draft.planning !== last.planning) {
                 lastDbDraftRef.current = { content: res.draft.content, planning: res.draft.planning }
@@ -765,47 +759,19 @@ export function SceneContinuationPanel({
         return sessions?.find((session) => session.id === codexSessionId)?.status === 'running'
     })
 
+    const linkedSessionExists = useEditorCodexStore((state) => Boolean(state.sessionsByNovel[novelId ?? '']?.sessions.some((session) => session.id === codexSessionId)))
     useEffect(() => {
-        if (!isSent) return
+        if (!codexSessionId) return
         void applyExternalDraft()
-    }, [isSent, sessionRunning, applyExternalDraft])
-
-    // Load the skill (its name for the request chip, and its bound prompt to render this panel).
-    useEffect(() => {
-        if (!skillId) return
-        let cancelled = false
-        void skillApi
-            .get(skillId)
-            .then(async (res) => {
-                if (cancelled) return
-                setSkillName(res.skill?.name ?? '')
-                const promptName = res.skill?.prompt?.trim()
-                if (!promptName) {
-                    setSkillBoundPrompt(null)
-                    return
-                }
-                const normalized = promptName.toLowerCase()
-                const all = await promptApi.list().then((result) => result.prompts ?? []).catch(() => [] as Prompt[])
-                if (cancelled) return
-                setSkillBoundPrompt(all.find((prompt) => prompt.name.trim().toLowerCase() === normalized) ?? null)
-            })
-            .catch(() => {
-                if (!cancelled) {
-                    setSkillName('')
-                    setSkillBoundPrompt(null)
-                }
-            })
-        return () => {
-            cancelled = true
-        }
-    }, [skillId])
+    }, [codexSessionId, sessionRunning, linkedSessionExists, applyExternalDraft])
 
     const ready = !!selectedPrompt && groups !== null && componentPrompts !== null && Boolean(selectedGroup)
     const promptDisabledReason = getPromptRunDisabledReason(selectedPrompt, groups)
-    const missingRequired = model.missingRequiredInputNames.length > 0
+    const missingRequired = previewModel.missingRequiredInputNames.length > 0
     const canGenerate =
         ready &&
         !generating &&
+        !isLocked &&
         !missingRequired &&
         !promptDisabledReason &&
         Boolean(selectedGroup) &&
@@ -813,9 +779,9 @@ export function SceneContinuationPanel({
         renderedMessages.length > 0
     const showTerminateButton = generating || generateAbortRef.current !== null || Boolean(resultText.trim()) || Boolean(reasoningText.trim())
     const showWriteActions = !generating && Boolean(contentDraft.trim())
-    const runHint = missingRequired
+    const runHint = lockedSnapshot ? '' : missingRequired
         ? tPrompts('advanced.preview.missingRequiredBadge', {
-              names: model.missingRequiredInputNames.join(', '),
+              names: previewModel.missingRequiredInputNames.join(', '),
           })
         : promptDisabledReason
           ? tSceneOperation(`disabledReasons.${promptDisabledReason}`)
@@ -828,6 +794,7 @@ export function SceneContinuationPanel({
         const controller = new AbortController()
         generateAbortRef.current = controller
 
+        snapshotRef.current = buildSnapshot()
         setGenerating(true)
         setRunError(null)
         setOutputPromptId(selectedPrompt.id)
@@ -841,6 +808,7 @@ export function SceneContinuationPanel({
             const result = await runModelGroupWithFallback({
                 group: selectedGroup,
                 input: {
+                    sessionId: `continuation:${sceneId}:${panelId ?? 'panel'}`,
                     temperature: selectedGroup.settings.temperature ?? undefined,
                     maxTokens: selectedGroup.settings.maxTokens ?? undefined,
                     messages: renderedMessages,
@@ -868,7 +836,7 @@ export function SceneContinuationPanel({
             }
             setGenerating(false)
         }
-    }, [canGenerate, renderedMessages, selectedGroup, selectedPrompt])
+    }, [canGenerate, renderedMessages, selectedGroup, selectedPrompt, buildSnapshot, sceneId, panelId])
 
     const handleTerminate = useCallback(() => {
         generateAbortRef.current?.abort()
@@ -885,6 +853,8 @@ export function SceneContinuationPanel({
 
     // Discard the panel only after its shared draft and paired Codex session are safely removed.
     const closeAndCleanup = useCallback(() => {
+        discardingRef.current = true
+        if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current)
         generateAbortRef.current?.abort()
         if (!panelId) {
             onClose()
@@ -899,6 +869,7 @@ export function SceneContinuationPanel({
                 onClose()
             })
             .catch((error) => {
+                discardingRef.current = false
                 console.error('Failed to delete continuation draft:', error)
                 setRunError(error instanceof Error ? error.message : String(error))
             })
@@ -916,7 +887,7 @@ export function SceneContinuationPanel({
     }, [closeAndCleanup, contentDraft, onApplyContinuation, sceneId])
 
     const handlePreview = useCallback(() => {
-        if (!selectedPrompt) return
+        if (!selectedPrompt && !lockedSnapshot) return
         onOpenRightSidebar?.()
         showInfoPanelPreview({
             kind: 'prompt_render',
@@ -924,7 +895,7 @@ export function SceneContinuationPanel({
             title: previewTitle,
             model: previewModel,
         })
-    }, [onOpenRightSidebar, previewModel, previewSourceId, previewTitle, selectedPrompt, showInfoPanelPreview])
+    }, [lockedSnapshot, onOpenRightSidebar, previewModel, previewSourceId, previewTitle, selectedPrompt, showInfoPanelPreview])
 
     const continuationLabel = useMemo(() => {
         const chapterPart = chapterTitle?.trim() || tPrompts('categories.sceneContinuation')
@@ -932,58 +903,26 @@ export function SceneContinuationPanel({
     }, [chapterTitle, tPrompts])
 
     const handleSendToCodex = useCallback(async () => {
-        if (!skillId || !panelId || !novelId || sending || isSent) return
-
+        if (!panelId || !novelId || !selectedPrompt || isLocked || generating) return
         setSending(true)
         setSendError(null)
         try {
-            const skillToken = `[${skillName || tPrompts('categories.sceneContinuation')}](skill:${skillId})`
-            const positionToken = `[${continuationLabel}](continuation:${chapterId}:${sceneId}:${panelId})`
-            const ask = codexInstruction.trim()
-            const draftContent = `${skillToken}\n\n${positionToken}${ask ? `\n\n${ask}` : ''}`
-
-            const sessionId = await useEditorCodexStore.getState().createSceneContinuationSkillSession(novelId, {
-                skillId,
-                sceneId,
-                chapterId,
-                panelId,
-                renderedBlocks:
-                    renderedMessages.length > 0
-                        ? renderedMessages.map((message) => ({ role: message.role, text: message.content }))
-                        : undefined,
-                draftContent,
-                title: `${skillName || tPrompts('categories.sceneContinuation')} · ${continuationLabel}`,
+            snapshotRef.current = buildSnapshot()
+            await saveDraft()
+            const sessionId = await useEditorCodexStore.getState().createSceneContinuationSession(novelId, {
+                panelId, title: continuationLabel,
             })
             if (sessionId) {
-                onSetCodexSessionId?.(sessionId)
-                // Open the session in the right panel right away (saves the extra "open session"
-                // click). Use the fresh id — the codexSessionId prop hasn't propagated yet.
+                setCodexSessionId(sessionId)
+                setLockedSnapshot(snapshotRef.current)
                 useEditorCodexStore.getState().selectSession(novelId, sessionId)
                 onOpenRightSidebar?.()
                 useInfoPanelStore.getState().setActiveTab('codex')
             }
         } catch (error) {
-            console.error('Failed to send scene continuation to Codex:', error)
             setSendError(error instanceof Error ? error.message : String(error))
-        } finally {
-            setSending(false)
-        }
-    }, [
-        chapterId,
-        codexInstruction,
-        continuationLabel,
-        isSent,
-        novelId,
-        onOpenRightSidebar,
-        onSetCodexSessionId,
-        panelId,
-        renderedMessages,
-        sceneId,
-        sending,
-        skillId,
-        skillName,
-        tPrompts,
-    ])
+        } finally { setSending(false) }
+    }, [panelId, novelId, selectedPrompt, isLocked, generating, buildSnapshot, saveDraft, continuationLabel, onOpenRightSidebar])
 
     const handleOpenSession = useCallback(() => {
         if (!codexSessionId) return
@@ -997,9 +936,9 @@ export function SceneContinuationPanel({
             <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-4 p-3 pb-2">
                 <div className="min-w-0 space-y-1">
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        {isSkillMode ? <Sparkles className="h-4 w-4" /> : <PenLine className="h-4 w-4" />}
+                        <PenLine className="h-4 w-4" />
                         <span className="font-medium">
-                            {isSkillMode ? skillName || tPrompts('categories.sceneContinuation') : tPrompts('categories.sceneContinuation')}
+                            {tPrompts('categories.sceneContinuation')}
                         </span>
                     </div>
                     {loadError && <div className="text-xs text-destructive truncate">{loadError}</div>}
@@ -1009,7 +948,7 @@ export function SceneContinuationPanel({
                 <div />
 
                 <div className="shrink-0 flex items-center justify-end gap-1">
-                    <Button type="button" variant="ghost" size="sm" className="gap-2" onClick={handlePreview} disabled={!selectedPrompt}>
+                    <Button type="button" variant="ghost" size="sm" className="gap-2" onClick={handlePreview} disabled={!lockedSnapshot && !selectedPrompt}>
                         <Eye className="h-4 w-4" />
                         {tEditor('infoPanel.tabs.preview')}
                     </Button>
@@ -1031,10 +970,10 @@ export function SceneContinuationPanel({
                 </div>
             </div>
 
-            {((!isLocked && !collapsed) || (isLocked && sentConfigExpanded)) && (
+            {!collapsed && (
                 <div className={cn('px-3 pb-3 space-y-4', isLocked && 'opacity-70')}>
                     <TermMentionsHighlightTextarea
-                        value={draft}
+                        value={lockedSnapshot?.instruction ?? draft}
                         onChange={(event) => setDraft(event.target.value)}
                         matcher={termMentionMatcher}
                         onTermMentionClick={handleTermMentionClick}
@@ -1050,10 +989,10 @@ export function SceneContinuationPanel({
                             'disabled:cursor-not-allowed disabled:opacity-50 md:text-sm overflow-hidden resize-none'
                         )}
                     />
-                    {detectedTermEntries.length > 0 && (
+                    {previewModel.renderedTermEntries.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-dashed border-muted-foreground/30">
                             <div className="flex flex-wrap gap-1 px-1">
-                                {detectedTermEntries.map((entry) => {
+                                {previewModel.renderedTermEntries.map((entry) => {
                                     const colorId = getTermEntryColorId(entry.color)
                                     const colorClasses = getTermEntryColorClasses(colorId)
                                     const hasCustomColor = colorId !== 'black'
@@ -1079,14 +1018,14 @@ export function SceneContinuationPanel({
                         </div>
                     )}
 
-                    {selectedPrompt ? (
+                    {(lockedSnapshot || selectedPrompt) ? (
                         <div className="rounded-md border bg-card p-4 space-y-3">
                             {model.previewInputs.length === 0 ? (
                                 <div className="rounded-md border bg-muted/20 px-3 py-6 text-sm text-muted-foreground text-center">
                                     {tPrompts('advanced.inputs.empty')}
                                 </div>
                             ) : (
-                                model.previewInputs.map((input) => <PreviewInputCard key={input.id} input={input} model={model} />)
+                                <PreviewInputList model={previewModel} />
                             )}
                         </div>
                     ) : (
@@ -1095,76 +1034,16 @@ export function SceneContinuationPanel({
                         </div>
                     )}
 
-                    {isSkillMode && (
-                        <div className="space-y-1.5 rounded-md border border-dashed bg-muted/10 p-3">
-                            <div className="text-xs font-medium text-muted-foreground">
-                                {tEditor('sceneContinuation.codexInstructionLabel')}
-                            </div>
-                            <AutoResizeTextarea
-                                value={codexInstruction}
-                                onChange={(event) => setCodexInstruction(event.target.value)}
-                                placeholder={tEditor('sceneContinuation.codexInstructionPlaceholder')}
-                                readOnly={isLocked}
-                                className="min-h-[64px] resize-none"
-                            />
-                        </div>
-                    )}
                 </div>
             )}
 
-            {isSkillMode ? (
-                <div className="flex flex-wrap items-center justify-between gap-2.5 px-3 py-2.5 border-t bg-muted/10">
-                    {sendError ? (
-                        <div className="text-xs text-destructive truncate">{sendError}</div>
-                    ) : (
-                        <div className="text-xs text-muted-foreground truncate">
-                            {codexSessionId
-                                ? tEditor('sceneContinuation.sentHint')
-                                : sending
-                                  ? tEditor('sceneContinuation.sendingHint')
-                                  : tEditor('sceneContinuation.sendHint')}
-                        </div>
-                    )}
-                    <div className="flex items-center gap-2 shrink-0">
-                        {isLocked && (
-                            <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="gap-2"
-                                onClick={() => setSentConfigExpanded((prev) => !prev)}
-                            >
-                                {sentConfigExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                                {sentConfigExpanded
-                                    ? tEditor('sceneContinuation.collapseConfig')
-                                    : tEditor('sceneContinuation.expandConfig')}
-                            </Button>
-                        )}
-                        {codexSessionId ? (
-                            <Button type="button" variant="outline" className="h-11 gap-2" onClick={handleOpenSession}>
-                                <Sparkles className="h-4 w-4" />
-                                {tEditor('sceneContinuation.openSession')}
-                            </Button>
-                        ) : (
-                            <Button
-                                type="button"
-                                className="min-w-[8rem] shrink-0 gap-2 h-11"
-                                disabled={sending || !skillId}
-                                onClick={() => void handleSendToCodex()}
-                            >
-                                {sending && <Loader2 className="h-4 w-4 animate-spin" />}
-                                {tEditor('sceneContinuation.sendToCodex')}
-                            </Button>
-                        )}
-                    </div>
-                </div>
-            ) : (
             <div className="flex flex-wrap items-center justify-between gap-2.5 px-3 py-2.5 border-t bg-muted/10">
                 <div className="flex flex-1 flex-wrap items-center gap-2 min-w-0">
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <button
                                 type="button"
+                                disabled={generating || isLocked}
                                 className={cn(
                                     'flex items-center gap-2 rounded-lg border bg-background px-3 py-1.5 text-left',
                                     'flex-1 min-w-0 max-w-[22rem]',
@@ -1174,7 +1053,7 @@ export function SceneContinuationPanel({
                                 <div className="min-w-0 flex-1">
                                     <div className="truncate text-sm font-medium flex items-center gap-2">
                                         {isUsingDefaultPrompt && <Heart className="h-4 w-4 text-muted-foreground" />}
-                                        <span className="truncate">{selectedPrompt?.name?.trim() || tPrompts('status.loading')}</span>
+                                        <span className="truncate">{promptName.trim() || tPrompts('status.loading')}</span>
                                     </div>
                                     <div className="truncate text-xs text-muted-foreground">
                                         {promptGroups.length} {tSceneOperation('modelGroups')}
@@ -1185,7 +1064,7 @@ export function SceneContinuationPanel({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" className="min-w-[20rem]">
                             <DropdownMenuItem
-                                disabled={!defaultPrompt || !!getPromptRunDisabledReason(defaultPrompt, groups)}
+                                disabled={!defaultPrompt}
                                 className={cn('items-start py-2', isUsingDefaultPrompt && 'bg-muted')}
                                 onSelect={() => setPromptSelection({ type: 'default' })}
                             >
@@ -1209,7 +1088,6 @@ export function SceneContinuationPanel({
                                     {promptSelection.type === 'prompt' && selectedPrompt && (
                                         <DropdownMenuItem
                                             key={`selected:${selectedPrompt.id}`}
-                                            disabled={!!getPromptRunDisabledReason(selectedPrompt, groups)}
                                             className="bg-muted"
                                             onSelect={() => setPromptSelection({ type: 'prompt', promptId: selectedPrompt.id })}
                                         >
@@ -1229,7 +1107,6 @@ export function SceneContinuationPanel({
                                             return (
                                                 <DropdownMenuItem
                                                     key={prompt.id}
-                                                    disabled={!!disabledReason}
                                                     className={cn('items-start', disabledReason && 'text-muted-foreground')}
                                                     onSelect={() => setPromptSelection({ type: 'prompt', promptId: prompt.id })}
                                                 >
@@ -1253,7 +1130,11 @@ export function SceneContinuationPanel({
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
-                    {showTerminateButton && (
+                    <Button type="button" variant="outline" disabled={!draftLoaded || sending || generating || (!codexSessionId && !selectedPrompt)} onClick={codexSessionId ? handleOpenSession : () => void handleSendToCodex()} className="h-11 gap-2">
+                        <Sparkles className="h-4 w-4" />
+                        {codexSessionId ? tEditor('sceneContinuation.openSession') : tEditor('sceneContinuation.sendToCodex')}
+                    </Button>
+                    {showTerminateButton && !codexSessionId && (
                         <Button type="button" variant="outline" onClick={handleTerminate} className="h-11">
                             {tSceneOperation('terminate')}
                         </Button>
@@ -1265,25 +1146,25 @@ export function SceneContinuationPanel({
                         className="min-w-[8rem] shrink-0 gap-2 h-11"
                     >
                         {generating && <Loader2 className="h-4 w-4 animate-spin" />}
-                        {tCommon('generate')}
+                        {contentDraft.trim() ? tEditor('sceneContinuation.retry') : tCommon('generate')}
                     </Button>
                 </div>
             </div>
-            )}
 
-            {!isSkillMode && (runHint || promptGroups.length > 0) && (
+            {sendError && <div className="px-3 text-sm text-destructive">{sendError}</div>}
+            {(runHint || promptGroups.length > 0) && (
                 <div className="px-3 pt-1.5 pb-2 space-y-1.5">
                     {runHint ? <div className="text-xs text-muted-foreground">{runHint}</div> : null}
                     {promptGroups.length > 0 && (
                         <div className="rounded-lg border bg-muted/20 px-3 py-2 space-y-1.5">
                             <div className="text-sm font-medium">{tSceneOperation('runModelGroups')}</div>
                             <div className="space-y-1">
-                                <div className="text-sm font-medium">{selectedPrompt?.name?.trim() || tPrompts('status.loading')}</div>
+                                <div className="text-sm font-medium">{promptName.trim() || tPrompts('status.loading')}</div>
                                 <div className="flex flex-wrap gap-1.5">
                                     {promptGroups.map((group) => {
                                         const isSelected = selectedGroup?.id === group.id
                                         const availableAssignments = getAvailableModelAssignments(group)
-                                        const disabled = generating || availableAssignments.length === 0
+                                        const disabled = generating || isLocked || availableAssignments.length === 0
                                         return (
                                             <Button
                                                 key={group.id}
@@ -1321,18 +1202,13 @@ export function SceneContinuationPanel({
                         content={contentDraft}
                         planning={planningDraft}
                         reasoning={reasoningText}
-                        promptName={(isSkillMode ? skillName : selectedPrompt?.name?.trim()) || tPrompts('categories.sceneContinuation')}
+                        promptName={promptName.trim() || tPrompts('categories.sceneContinuation')}
                         onContentChange={setContentDraft}
                         onPlanningChange={setPlanningDraft}
                     />
                     <div className="flex flex-wrap items-center justify-end gap-2">
                         {showWriteActions ? (
                             <>
-                                {!isSkillMode && (
-                                    <Button type="button" variant="outline" onClick={() => void handleGenerate()} disabled={!canGenerate}>
-                                        {tSceneOperation('retry')}
-                                    </Button>
-                                )}
                                 <Button type="button" variant="outline" onClick={handleWrite} disabled={!contentDraft.trim()}>
                                     {tSceneOperation('write')}
                                 </Button>

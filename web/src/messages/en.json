@@ -420,7 +420,6 @@
         },
         "ai": {
             "connectionsTitle": "AI Connections",
-            "connectionsDescription": "Add providers and fetch models. Credentials are encrypted and stored on the server.",
             "connectionType": "Format",
             "providerTypes": {
                 "openai": "OpenAI-Chat",
@@ -430,7 +429,6 @@
             "connectionNamePlaceholder": "e.g. My OpenAI-Chat",
             "apiKey": "API Key",
             "apiKeyPlaceholder": "sk-...",
-            "apiKeyHint": "Your API Key will be encrypted and stored on the server",
             "baseUrl": "Base URL",
             "baseUrlPlaceholder": "https://api.openai.com/v1",
             "baseUrlHint": "Modify this if using OpenAI-compatible services (Azure, local models, etc.)",
@@ -453,7 +451,6 @@
             "untitledSet": "Set {index}",
             "deleteSet": "Delete set",
             "availableGroupsTitle": "Model name groups",
-            "availableGroupsHint": "Drag a model group into a set to include it.",
             "noModelGroups": "No model groups yet.",
             "emptySet": "Drop model groups here",
             "collapsedMembersHint": "{count} groups assigned (expand to view)",
@@ -469,7 +466,6 @@
             "untitledGroup": "Group {index}",
             "deleteGroup": "Delete group",
             "providersTitle": "Active providers",
-            "providersHint": "Drag a model into a group to assign it.",
             "providerFilterPlaceholder": "Filter by model name",
             "noActiveProviders": "No active providers with models.",
             "noMatchedProviders": "No matching connections or models.",
@@ -536,7 +532,6 @@
         },
         "other": {
             "title": "GPT Image",
-            "description": "Configure an OpenAI Images-compatible service for Codex image generation and editing. Credentials are encrypted and stored on the server.",
             "loading": "Loading configuration...",
             "baseUrl": "Base URL",
             "baseUrlHint": "Requests use /models, /images/generations, and /images/edits under this URL.",
@@ -1127,7 +1122,14 @@
                 "end": "End of scene"
             }
         },
+        "conversationNavigation": {
+            "label": "Conversation turns",
+            "jumpToTurn": "Jump to conversation turn {number}",
+            "imageMessage": "Image message",
+            "noReply": "No reply yet"
+        },
         "infoPanel": {
+            "chatTitle": "AI Chat",
             "title": "Info Panel",
             "hide": "Hide Info Panel",
             "chapterSummary": "CHAPTER SUMMARY",
@@ -1229,6 +1231,22 @@
             "chatSnippetTitle": "AI reply snippet"
         },
         "codex": {
+            "subagents": {
+                "agent": "Subagent",
+                "back": "Back to conversation",
+                "loadEarlier": "Load earlier messages",
+                "empty": "No messages yet",
+                "reasoning": "Reasoning summary",
+                "unavailable": "Unable to read the subagent conversation",
+                "pendingInit": "Starting",
+                "running": "Working",
+                "interrupted": "Interrupted",
+                "completed": "Finished",
+                "errored": "Error",
+                "shutdown": "Closed",
+                "notFound": "Unavailable",
+                "unknown": "Status unknown"
+            },
             "activity": {
                 "command": "Command",
                 "action": "Action",
@@ -1538,7 +1556,7 @@
             "newChapter": "New Chapter",
             "insertBefore": "Insert Before",
             "insertAfter": "Insert After",
-            "copyBeats": "Copy Beats",
+            "copyTitle": "Copy Title",
             "copyProse": "Copy Prose",
             "untitledChapter": "Untitled Chapter",
             "noChaptersYet": "No chapters yet. Click \"+ New Chapter\" to add one.",
@@ -1569,24 +1587,18 @@
             "embeddingUpdating": "Updating embedding",
             "updateEmbedding": "Update scene embedding"
         },
-        "codexSkillTweak": {
-            "tweak": "Tweak",
-            "chatInputLabel": "Conversation input",
-            "chatInputPlaceholder": "Paste or type the content for the model to work on — @ mentioned terms are auto-injected…",
-            "chatInputHint": "This is assembled with the skill's bound prompt (overview + mentioned terms included automatically) and shipped with the message for Codex; the main composer text is your instruction to Codex.",
-            "done": "Done",
-            "send": "Send to Codex"
-        },
         "sceneContinuation": {
             "codexInstructionLabel": "Ask for Codex (optional)",
             "codexInstructionPlaceholder": "Extra guidance for Codex to act on…",
-            "sendToCodex": "Send to Codex",
+            "sendToCodex": "Hand to Codex",
             "sendHint": "The inputs above are assembled into the prompt for Codex to act on; locked after sending",
             "sentHint": "Handed to Codex — keep adjusting in the session on the right",
             "sendingHint": "Handing to Codex…",
             "openSession": "Open session",
             "expandConfig": "Expand",
-            "collapseConfig": "Collapse"
+            "collapseConfig": "Collapse",
+            "attachment": "Scene continuation panel",
+            "retry": "Retry"
         },
         "sceneOperation": {
             "modelGroups": "Model groups",
@@ -1808,6 +1820,7 @@
                 "sceneHasPreviousText": "Whether the current scene has previous text, useful for conditionals.",
                 "sceneChapterOutline": "The detail outline of the chapter the current scene belongs to; only populated when that chapter outline is non-empty.",
                 "sceneActOutline": "The detail outline of the act the current scene belongs to; only populated when that act outline is non-empty.",
+                "termsFrom": "Detects terms by name or alias in the supplied content and returns a collection for union. Accepts text, inputs, prose or summary collections, multiple arguments, and lists; inputs and collections expand through .value.",
                 "sceneHasChapterOutline": "Whether the current scene's chapter has a non-empty outline, useful for conditionals.",
                 "sceneHasActOutline": "Whether the current scene's act has a non-empty outline, useful for conditionals.",
                 "inputText": "Reads the text value of an input.",
@@ -2209,10 +2222,6 @@
             "description": "Description",
             "descriptionPlaceholder": "Enter skill description",
             "category": "Type",
-            "associatedPrompt": "Associated prompt",
-            "associatedPromptNone": "None",
-            "associatedPromptHint": "When Codex runs this skill it assembles this prompt into a draft and calls the model group (to use a model better suited for fiction).",
-            "missingPromptNotice": "Associated prompt \"{prompt}\" is missing — the skill was auto-disabled. Clone that prompt first, or check whether it was renamed.",
             "sectionTitle": "编辑Skills",
             "placeholder": "Write the skill instructions here (purpose, when to use, steps, output)...",
             "frontmatterHint": "Name and description are stored in official `SKILL.md` frontmatter; type and associated prompt are stored in `onw.json`.",
@@ -2238,7 +2247,6 @@
             "cloneFailed": "Failed to clone skill",
             "deleteFailed": "Failed to delete skill",
             "saveFailed": "Failed to save skill",
-            "missingPromptCannotEnable": "Associated prompt is missing — can't enable. Clone that prompt first or check whether it was renamed.",
             "nameCannotBeEmpty": "Name cannot be empty",
             "nameAlreadyExists": "A skill with this name already exists"
         }

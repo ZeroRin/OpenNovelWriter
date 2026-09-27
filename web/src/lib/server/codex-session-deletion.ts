@@ -15,6 +15,7 @@ export async function deleteCodexSession(ownerId: string, sessionId: string) {
         where: { sessionId, status: 'pending' },
         data: { status: 'accepted' },
     })
+    await prisma.sceneContinuationDraft.updateMany({ where: { codexSessionId: sessionId }, data: { codexSessionId: null } })
     const deleted = await prisma.codexSession.deleteMany({
         where: { id: sessionId, ownerId },
     })

@@ -16,6 +16,20 @@ export function normalizeSkillCategory(value: unknown): SkillCategory | null {
     return isSkillCategory(value) ? value : null
 }
 
+export function getSkillCategoryForSession(sessionCategory: unknown): SkillCategory | null {
+    switch (sessionCategory) {
+        case 'general': return 'ai_chat'
+        case 'scene_continuation': return 'scene_continuation'
+        case 'scene_operation': return 'scene_action'
+        default: return null
+    }
+}
+
+export function isSkillAvailableInSession(skill: { enabled: boolean; category: unknown }, sessionCategory: unknown) {
+    const category = getSkillCategoryForSession(sessionCategory)
+    return skill.enabled && category !== null && skill.category === category
+}
+
 export function isReservedSkillSlashCommand(name: string) {
     return (RESERVED_SKILL_SLASH_COMMANDS as readonly string[]).includes(name.trim().toLowerCase())
 }

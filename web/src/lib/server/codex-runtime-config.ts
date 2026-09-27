@@ -1,12 +1,11 @@
 import path from 'path'
-import { isOfficialDeepSeekAnthropicProvider } from '@/lib/codex-deepseek'
+import fs from 'node:fs/promises'
+import { isOfficialDeepSeekAnthropicProvider, isOfficialDeepSeekResponsesProvider } from '@/lib/codex-deepseek'
 
 import {
     applyCodexUpstreamModelCapabilities,
-    expandNativeCodexModels,
     parseCodexProviderModelsJson,
     parseCodexUpstreamFormat,
-    type CodexConnectionProviderType,
 } from '@/lib/codex-config'
 import { writeFileAtomicallyIfChanged } from '@/lib/server/atomic-file-write'
 import { getCodexInternalBaseUrl, getCodexProxyToken } from '@/lib/server/codex-internal-auth'
@@ -24,20 +23,26 @@ type RuntimeConnection = {
 }
 
 export async function syncCodexConnectionRuntimeFiles(connection: RuntimeConnection) {
-    if ((connection.providerType as CodexConnectionProviderType) !== 'custom') {
-        return ensureCodexConnectionHome(connection.ownerId, connection.id)
+    const codexHome = await ensureCodexConnectionHome(connection.ownerId, connection.id)
+    if (connection.providerType !== 'custom') {
+        const configPath = path.join(codexHome, 'config.toml')
+        const config = await fs.readFile(configPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error
+            return ''
+        })
+        await writeFileAtomicallyIfChanged(configPath, inheritCodexModelConfig(config), { mode: 0o600 })
+        return codexHome
     }
 
     const upstreamFormat = parseCodexUpstreamFormat(connection.upstreamFormat)
     if (!upstreamFormat) throw new Error('Custom Codex connection is missing its upstream format.')
-    const models = expandNativeCodexModels(parseCodexProviderModelsJson(connection.modelsJson))
+    const models = parseCodexProviderModelsJson(connection.modelsJson)
         .map((model) => applyCodexUpstreamModelCapabilities(model, upstreamFormat, connection.baseUrl))
     if (models.length === 0) throw new Error('Custom Codex connection has no models.')
     const defaultModelId = connection.defaultModelId?.trim() || ''
     const defaultModel = models.find((model) => model.id === defaultModelId)
     if (!defaultModel) throw new Error('Custom Codex connection has an invalid default model.')
 
-    const codexHome = await ensureCodexConnectionHome(connection.ownerId, connection.id)
     await writeCodexModelCatalog({ codexHome, upstreamFormat, baseUrl: connection.baseUrl, models })
 
     const proxyBaseUrl = `${getCodexInternalBaseUrl()}/api/internal/codex/upstream/${connection.id}`
@@ -45,13 +50,10 @@ export async function syncCodexConnectionRuntimeFiles(connection: RuntimeConnect
     const configToml = [
         'model_provider = "opennovelwriter"',
         `model = ${tomlString(defaultModel.id)}`,
-        `model_context_window = ${defaultModel.contextWindow}`,
-        `model_auto_compact_token_limit = ${Math.floor(defaultModel.contextWindow * 0.95)}`,
-        `model_reasoning_effort = ${tomlString(defaultModel.defaultReasoningEffort)}`,
-        'disable_response_storage = true',
         ...(upstreamFormat === 'anthropic-messages'
             ? [`web_search = "${isOfficialDeepSeekAnthropicProvider(upstreamFormat, connection.baseUrl) ? 'live' : 'disabled'}"`]
-            : []),
+            : isOfficialDeepSeekResponsesProvider(upstreamFormat, connection.baseUrl)
+                ? ['web_search = "disabled"'] : []),
         `model_catalog_json = ${tomlString(CODEX_MODEL_CATALOG_FILE)}`,
         '',
         '[model_providers.opennovelwriter]',
@@ -67,6 +69,14 @@ export async function syncCodexConnectionRuntimeFiles(connection: RuntimeConnect
         writeFileAtomicallyIfChanged(path.join(codexHome, 'config.toml'), configToml, { mode: 0o600 }),
     ])
     return codexHome
+}
+
+export function inheritCodexModelConfig(config: string) {
+    let topLevel = true
+    return `${config.split('\n').filter((line) => {
+        if (line.trimStart().startsWith('[')) topLevel = false
+        return !topLevel || !/^\s*(?:model|model_context_window|model_auto_compact_token_limit|model_reasoning_effort|model_catalog_json|disable_response_storage)\s*=/.test(line)
+    }).join('\n').trim()}\n`
 }
 
 function tomlString(value: string) {

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useTranslations } from 'next-intl'
 import { Brain, Check, ChevronDown, ChevronRight, Eye, Loader2, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { ModelGroupLogoIcon } from '@/components/ai/model-group-logo-icon'
-import { PreviewInputCard } from '@/components/editor/prompt-inputs-editor/preview-input-card'
+import { PreviewInputList } from '@/components/editor/prompt-inputs-editor/preview-input-list'
 import { PreviewRenderedSection } from '@/components/editor/prompt-inputs-editor/preview-rendered-section'
 import { useInputsEditorModel } from '@/components/editor/prompt-inputs-editor/model'
 import type { SceneOperationPromptMenuRunSpec } from '@/components/editor/scene-operation-prompt-menu'
@@ -261,6 +261,7 @@ export function SceneOperationRunDialog({
                 const result = await runModelGroupWithFallback({
                     group: selectedGroup,
                     input: {
+                        sessionId: `scene-operation:${sceneId}:${spec.prompt.id}`,
                         temperature: selectedGroup.settings.temperature ?? undefined,
                         maxTokens: selectedGroup.settings.maxTokens ?? undefined,
                         messages: renderedMessages,
@@ -297,7 +298,7 @@ export function SceneOperationRunDialog({
                 setGenerating(false)
             }
         },
-        [canGenerate, onComplete, onOpenChange, onRunningChange, renderedMessages, selectedGroup]
+        [canGenerate, onComplete, onOpenChange, onRunningChange, renderedMessages, selectedGroup, sceneId, spec.prompt.id]
     )
 
     useEffect(() => {
@@ -391,11 +392,7 @@ export function SceneOperationRunDialog({
                                             {tPrompts('advanced.inputs.empty')}
                                         </div>
                                     ) : (
-                                        <div className="space-y-2">
-                                            {model.previewInputs.map((input) => (
-                                                <PreviewInputCard key={input.id} input={input} model={model} />
-                                            ))}
-                                        </div>
+                                        <PreviewInputList model={model} />
                                     )}
                                 </div>
 

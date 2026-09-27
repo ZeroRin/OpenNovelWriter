@@ -108,7 +108,6 @@ export function useTermController({
     const isHydrated = useAuthStore((s) => s.isHydrated)
     const rootRef = useRef<HTMLDivElement | null>(null)
     const [anchorRect, setAnchorRect] = useState<AnchorRect | null>(null)
-    const mentionsSignatureRef = useRef<string>('')
     const saveTimerRef = useRef<NodeJS.Timeout | null>(null)
     const pendingSaveRef = useRef<StoredTerms | null>(null)
     const hasLoadedFromServerRef = useRef(false)
@@ -413,29 +412,7 @@ export function useTermController({
     ])
 
     useEffect(() => {
-        if (!novelId) return
-
-        const signature = termState.entries
-            .map((entry) => {
-                const archived = entry.archived ? '1' : '0'
-                return [
-                    entry.id,
-                    archived,
-                    entry.categoryId,
-                    entry.title,
-                    entry.subtitle ?? '',
-                    entry.aliases ?? '',
-                    entry.color ?? '',
-                    entry.avatar ?? '',
-                    (entry.tags ?? []).join(','),
-                    entry.description ?? '',
-                ].join('\t')
-            })
-            .join('\n')
-
-        if (signature === mentionsSignatureRef.current) return
-
-        mentionsSignatureRef.current = signature
+        if (!novelId || !hasLoadedFromServerRef.current) return
         setMentionEntries(novelId, termState.entries)
         setMentionEntriesStatus(novelId, 'loaded')
     }, [novelId, setMentionEntries, setMentionEntriesStatus, termState.entries])

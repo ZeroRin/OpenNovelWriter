@@ -1,6 +1,6 @@
 import { getLoadedIcon, loadIcon } from './icons/loader'
 import { resolveIconRef } from './icons/registry'
-import { colonVariantTagToHyphen, normalizeModelId } from './models/normalize'
+import { colonVariantTagToHyphen, extractParameterSize, normalizeModelId } from './models/normalize'
 import { REGISTRY_PROVIDER_BASE_URLS } from './models/provider-base-urls'
 import { REASONING_FAMILY_RULES } from './models/reasoning-families.gen'
 import { matchReasoningMembership } from './models/reasoning-membership'
@@ -59,7 +59,6 @@ export function detectCherryStudioModelTypes(
 }
 
 export function isImageGenerationModel(input: CherryStudioDetectionInput): boolean {
-    if (/^gpt-image-2-5-(sunburst|flare)$/.test(normalizeModelId(input.modelId))) return true
     const flags = lookupRegistryFlags(input)
     return flags !== undefined && (flags & REGISTRY_FLAG.imageGeneration) !== 0
 }
@@ -130,8 +129,11 @@ function lookupFlagsInTable(
     if (exact !== undefined) return exact
 
     const indexes = getNormalizedIndexes(table, providerId)
-    if (colonVariantTagToHyphen(modelId) !== modelId) {
-        return indexes.sized.get(normalizeModelId(modelId, { keepParameterSize: true }))
+    const sizedModelId = normalizeModelId(modelId, { keepParameterSize: true })
+    const sized = indexes.sized.get(sizedModelId)
+    if (sized !== undefined) return sized
+    if (colonVariantTagToHyphen(modelId) !== modelId || extractParameterSize(sizedModelId)) {
+        return undefined
     }
     return indexes.regular.get(normalizeModelId(modelId))
 }

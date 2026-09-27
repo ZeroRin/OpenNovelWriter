@@ -22,6 +22,7 @@ export async function syncCodexConnectionMcp(input: {
     connectionId: string
     toolsApprovalMode?: CodexToolsApprovalMode
     reviewLevel?: string
+    deepSeekWebSearchConnectionId?: string
 }) {
     const codexHome = await ensureCodexConnectionHome(input.ownerId, input.connectionId)
     const configPath = path.join(codexHome, CONFIG_FILE_NAME)
@@ -35,6 +36,7 @@ export async function syncCodexConnectionMcp(input: {
         internalToken: getCodexInternalToken(),
         toolsApprovalMode: input.toolsApprovalMode,
         reviewLevel: input.reviewLevel,
+        deepSeekWebSearchConnectionId: input.deepSeekWebSearchConnectionId,
     })
 
     await writeFileAtomicallyIfChanged(configPath, configToml, { mode: 0o600 })
@@ -55,6 +57,7 @@ export function upsertOpenNovelWriterMcpConfig(input: string, options: {
     internalToken?: string
     toolsApprovalMode?: CodexToolsApprovalMode
     reviewLevel?: string
+    deepSeekWebSearchConnectionId?: string
 }) {
     const cleaned = removeOpenNovelWriterMcpSections(removeManagedBlock(normalizeText(input))).trimEnd()
     const block = buildOpenNovelWriterMcpBlock(options)
@@ -70,12 +73,16 @@ function buildOpenNovelWriterMcpBlock(options: {
     internalToken?: string
     toolsApprovalMode?: CodexToolsApprovalMode
     reviewLevel?: string
+    deepSeekWebSearchConnectionId?: string
 }) {
     const scriptPath = path.join(options.webRoot, 'scripts', 'opennovelwriter-mcp-server.cjs')
     const envLines = [
         `OPENNOVELWRITER_OWNER_ID = "${escapeTomlString(options.ownerId)}"`,
         `OPENNOVELWRITER_DATA_DIR = "${escapeTomlString(options.dataDir)}"`,
     ]
+    if (options.deepSeekWebSearchConnectionId) {
+        envLines.push(`OPENNOVELWRITER_DEEPSEEK_SEARCH_CONNECTION_ID = "${escapeTomlString(options.deepSeekWebSearchConnectionId)}"`)
+    }
     if (options.reviewLevel?.trim()) {
         // Lets the MCP server gate destructive tools (e.g. delete_snippet) on the session review
         // level: it raises an approval elicitation unless the author is at no_review.

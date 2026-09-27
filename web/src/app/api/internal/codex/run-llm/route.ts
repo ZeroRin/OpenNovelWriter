@@ -27,6 +27,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => null)
     const ownerId = typeof body?.ownerId === 'string' ? body.ownerId.trim() : ''
     const groupId = typeof body?.groupId === 'string' ? body.groupId.trim() : ''
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : undefined
     const system = typeof body?.system === 'string' && body.system.trim() ? body.system : undefined
     const rawMessages = Array.isArray(body?.messages) ? body.messages : []
     const temperature =
@@ -65,6 +66,7 @@ export async function POST(request: NextRequest) {
             group,
             signal: request.signal,
             input: {
+                sessionId,
                 stream: false,
                 system,
                 temperature,

@@ -1,3 +1,4 @@
+import type { PromptTemplateChatState } from '@/lib/prompt-template-render'
 import type { Prisma } from '@/generated/prisma/client'
 
 export type EditorChatConversationRecord = Prisma.EditorChatConversationGetPayload<{
@@ -65,6 +66,7 @@ export function serializeEditorChatConversation(record: EditorChatConversationRe
                 content: message.content,
                 sentContent: message.sentContent,
                 fullRenderedContent: message.fullRenderedContent,
+                renderState: safeParseJson(message.renderStateJson) as PromptTemplateChatState | null,
                 promptTokens: message.promptTokens,
                 completionTokens: message.completionTokens,
                 totalTokens: message.totalTokens,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { generateText } from 'ai'
+import { randomUUID } from 'node:crypto'
 import { getCurrentUser } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { decryptApiKey } from '@/lib/server/ai-credentials'
@@ -44,6 +45,7 @@ export async function POST(request: NextRequest) {
             apiKey,
             baseUrl: connection.baseUrl,
             modelId,
+            sessionId: randomUUID(),
         })
 
         const result = await generateText({ model, prompt })

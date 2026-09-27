@@ -5,29 +5,29 @@
     "presetId": "preset-50l0ku",
     "name": "预设-通用续写",
     "description": "场景续写，通过总结提取前文的信息，可在额外信息里插入额外的章节或者片段内容",
-    "revision": 1.5,
-    "exportedAt": "2026-07-18T06:14:49.715Z"
+    "revision": 1.9,
+    "exportedAt": "2026-09-24T21:56:59.309Z"
   },
   "bundle": {
     "schema": "open-novel-writer/prompt-bundle",
     "version": 1,
-    "exportedAt": "2026-07-18T06:14:49.715Z",
+    "exportedAt": "2026-09-24T21:56:59.309Z",
     "entryName": "预设-通用续写",
     "prompts": [
       {
         "name": "预设-通用续写",
         "category": "scene_continuation",
-        "description": null,
+        "description": "根据作者指令续写正文，结合前后文、词条、故事摘要和细纲；支持额外资料、目标字数与可选写作规划。",
         "messages": [
           {
             "id": "5433293d-b9f1-43b2-b633-d78469c9026f",
             "role": "system",
-            "content": "{%- include \"Identity\" %}\n<InformationInterpreting>\n\t<Instruction>：包含关于你输出“内容”的指令。它描述了应该写什么，以及在决定写什么时需要考虑的事项。括号()内的指令是user为你提供如何进行写作的指导，而括号外的指令则描述了内容本身。\n\t{%- if scene.hasPreviousText %}\n\t\t<PreviousText>: 此部分包含故事中你的内容被插入之处的前置叙事文本。它为你提供叙事文本的上下文，并帮助你理解你所提供的内容将如何承接前文。\n\t{%- endif %}\n\t{%- if scene.hasFollowText %}\n\t\t<FollowingText>:此部分包含故事中在你所写内容“紧接着之后”的后续叙事文本。它为你提供叙事文本的上下文，并帮助你理解你所提供的内容将如何自然地过渡到后文。\n\t{%- endif %}\n\t<TermKnowledge>：提供结构化的、作者专属的词条知识，以及关于背景设定、故事、角色和其他元素的信息，还有旨在帮助维持故事内部的一致性、连贯性和流畅度。这一部分的知识优先级高于你作为AI的内部知识，如果这一部分的设定和你的寻常知识冲突，以提供的知识为主。\n\t{%- if inputs[\"额外信息\"].snippet.count %}\n\t\t<SnippetInfo>：此部分一般包含user的注释，一般呈现为碎片化，但是却包含帮助你理解的重要信息\n\t{%- endif %}\n\t<Outline>: 小说的剧情总结，帮助你理解小说发生的故事\n\t{%- if scene.hasChapterOutline or scene.hasActOutline or inputs[\"额外信息\"].chapterOutline.count or inputs[\"额外信息\"].actOutline.count %}\n\t\t<DetailedOutline>：本卷/本章的细纲，是 user 预先规划的剧情走向与节奏安排，描述了这一段\"打算怎么写\"。请据此把握当前的写作方向，但具体落笔仍以叙事连贯为先。\n\t{%- endif %}\n</InformationInterpreting>\n<ResponseGuidance>\n\t<General>\n\t\t理解你将要撰写的内容。必须精确遵循<Instruction>，并且为了让你的作品被作者接受，必须执行<Instruction>中提供的所有指令。你应该尽量接近{{ inputs[\"目标字数\"].value }}字（字数误差在 10% 左右）。\n\t\t你的回复只能包含你的规划过程和最终的叙事文本。不要提问、寻求澄清或要求确认。相反，你应该针对<Instruction>提供你最终且最佳的结果。你的叙事文本将被直接、立即地整合到故事中，未经任何人工审查或修改，因此请务必呈现你的最高水平。同时注意叙事文本是plain text，不能使用markdown语法。\n\t</General>\n\t{%- if inputs[\"启用planning\"].value %}\n\t\t<PlanningGuidance>\n\t\t\t在开始为<Instruction>撰写叙事文本之前，你应该先制定一个计划，并理清写作流程，以便将所有的上下文、指示、指令、风格元素以及其他信息整合进去，从而使用zh-CN创作出你的叙事文本。\n\t\t\t你的计划必须涵盖以下几个方面：\n\t\t\t• 在你的 <TermKnowledge> 中，有哪些关键信息对执行<Instruction>中的指令至关重要？\n\t\t\t• 你能在叙事文本中识别出哪些出彩的机会？你将如何抓住这些机会？\n\t\t\t• <Instruction>中的高光时刻是什么？把自己想象成一名读者，在这个场景中，你期望看到一些亮点，比如主角（MC）的成长、主角展现实力并让其他人感到惊艳、与他人有亲密互动、情节反转、留下神秘印象等。在这个场景中，你期望看到哪些部分？当前的叙事是否突出了它？<Instruction>可能不会明确告诉你高光时刻在哪里，你需要从<Instruction>中推断出来。此外，高光时刻并不意味着要在环境描写或过度解释上花费大量笔墨，保持行文的流畅。\n\t\t\t• user在()里的指令一般都是特殊的指示，比如想让你如何进行描写，或者给你一些暗示剧情的走向，你需要思考user的意图并且满足\n\t\t\t• <Instruction>的叙事文本可能会涉及到<CommonAIMistakes>里提到的哪几个问题，你又要如何避免从而使得叙事文本更加自然，去除AI味？\n\t\t\t• 为了在字数的限制内遵循<Instruction>的指令，你需要如何把控叙事文本的节奏？指令包含的内容相对于要求字数来说是否过于庞大，需要高效且简洁的写作？指令包含的内容相对于要求字数来说是否较少，可能需要更多的发散、放缓节奏和/或增加旁白叙述？或者指令的内容与要求字数恰好匹配，需要你保持匀速、连贯的行文流畅度？\n\t\t</PlanningGuidance>\n\t{%- endif %}\n\t<Format>\n\t\t你的planning输出必须用如下的标签进行包裹：\n\t\t{%- if inputs[\"启用planning\"].value %}\n\t\t\t<Planning>\n\t\t\t\tplan的内容\n\t\t\t</Planning>\n\t\t\t请务必遵守以上的格式进行planning的输出\n\t\t{%- endif %}\n\t\t你的叙事文本输出必须用如下的标签进行包裹：\n\t\t<Content>\n\t\t\t叙事文本的内容\n\t\t</Content>\n\t\t请务必遵守以上的格式进行叙事文本内容的输出\n\t</Format>\n</ResponseGuidance>\n{%- include \"WritingStyle\" %}"
+            "content": "{%- include \"Identity\" %}\n\n<InformationInterpreting>\n\t<Instruction>：包含关于你输出“内容”的指令。它描述了应该写什么，以及在决定写什么时需要考虑的事项。括号()内的指令是user为你提供如何进行写作的指导，而括号外的指令则描述了内容本身。\n\t{%- if scene.hasPreviousText %}\n\t\t<PreviousText>: 此部分包含故事中你的内容被插入之处的前置叙事文本。它为你提供叙事文本的上下文，并帮助你理解你所提供的内容将如何承接前文。\n\t{%- endif %}\n\t{%- if scene.hasFollowText %}\n\t\t<FollowingText>:此部分包含故事中在你所写内容“紧接着之后”的后续叙事文本。它为你提供叙事文本的上下文，并帮助你理解你所提供的内容将如何自然地过渡到后文。\n\t{%- endif %}\n\t<TermKnowledge>：提供结构化的、作者专属的词条知识，以及关于背景设定、故事、角色和其他元素的信息，还有旨在帮助维持故事内部的一致性、连贯性和流畅度。这一部分的知识优先级高于你作为AI的内部知识，如果这一部分的设定和你的寻常知识冲突，以提供的知识为主。\n\t{%- if inputs[\"额外信息\"].snippet.count %}\n\t\t<SnippetInfo>：此部分一般包含user的注释，一般呈现为碎片化，但是却包含帮助你理解的重要信息\n\t{%- endif %}\n\t<Outline>: 小说的剧情总结，帮助你理解小说发生的故事\n\t{%- if scene.hasChapterOutline or scene.hasActOutline or inputs[\"额外信息\"].chapterOutline.count or inputs[\"额外信息\"].actOutline.count %}\n\t\t<DetailedOutline>：本卷/本章的细纲，是 user 预先规划的剧情走向与节奏安排，描述了这一段\"打算怎么写\"。请据此把握当前的写作方向，但具体落笔仍以叙事连贯为先。\n\t{%- endif %}\n</InformationInterpreting>\n\n<ResponseGuidance>\n\t<General>\n\t\t理解你将要撰写的内容。必须精确遵循<Instruction>，并且为了让你的作品被作者接受，必须执行<Instruction>中提供的所有指令。你应该尽量接近{{ inputs[\"目标字数\"].value }}字（字数误差在 10% 左右）。\n\t\t你的回复只能包含你的规划过程和最终的叙事文本。不要提问、寻求澄清或要求确认。相反，你应该针对<Instruction>提供你最终且最佳的结果。你的叙事文本将被直接、立即地整合到故事中，未经任何人工审查或修改，因此请务必呈现你的最高水平。同时注意叙事文本是plain text，不能使用markdown语法。\n\t</General>\n\t{%- if inputs[\"启用planning\"].value %}\n\t\t<PlanningGuidance>\n\t\t\t在开始为<Instruction>撰写叙事文本之前，你应该先制定一个计划，并理清写作流程，以便将所有的上下文、指示、指令、风格元素以及其他信息整合进去，从而使用zh-CN创作出你的叙事文本。\n\t\t\t你的计划必须涵盖以下几个方面：\n\t\t\t• 在你的 <TermKnowledge> 中，有哪些关键信息对执行<Instruction>中的指令至关重要？\n\t\t\t• 你能在叙事文本中识别出哪些出彩的机会？你将如何抓住这些机会？\n\t\t\t• <Instruction>中的高光时刻是什么？把自己想象成一名读者，在这个场景中，你期望看到一些亮点，比如主角（MC）的成长、主角展现实力并让其他人感到惊艳、与他人有亲密互动、情节反转、留下神秘印象等。在这个场景中，你期望看到哪些部分？当前的叙事是否突出了它？<Instruction>可能不会明确告诉你高光时刻在哪里，你需要从<Instruction>中推断出来。此外，高光时刻并不意味着要在环境描写或过度解释上花费大量笔墨，保持行文的流畅。\n\t\t\t• user在()里的指令一般都是特殊的指示，比如想让你如何进行描写，或者给你一些暗示剧情的走向，你需要思考user的意图并且满足\n\t\t\t• <Instruction>的叙事文本可能会涉及到<CommonAIMistakes>里提到的哪几个问题，你又要如何避免从而使得叙事文本更加自然，去除AI味？\n\t\t\t• 为了在字数的限制内遵循<Instruction>的指令，你需要如何把控叙事文本的节奏？指令包含的内容相对于要求字数来说是否过于庞大，需要高效且简洁的写作？指令包含的内容相对于要求字数来说是否较少，可能需要更多的发散、放缓节奏和/或增加旁白叙述？或者指令的内容与要求字数恰好匹配，需要你保持匀速、连贯的行文流畅度？\n\t\t</PlanningGuidance>\n\t{%- endif %}\n\t<Format>\n\t\t你的planning输出必须用如下的标签进行包裹：\n\t\t{%- if inputs[\"启用planning\"].value %}\n\t\t\t<Planning>\n\t\t\t\tplan的内容\n\t\t\t</Planning>\n\t\t\t请务必遵守以上的格式进行planning的输出\n\t\t{%- endif %}\n\t\t你的叙事文本输出必须用如下的标签进行包裹：\n\t\t<Content>\n\t\t\t叙事文本的内容\n\t\t</Content>\n\t\t请务必遵守以上的格式进行叙事文本内容的输出\n\t</Format>\n</ResponseGuidance>\n\n{% include \"WritingStyle\" %}"
           },
           {
             "id": "dd23715d-2bb6-4010-8453-e7fc79c52e2e",
             "role": "user",
-            "content": "{%- include \"TermKnowledge\" %}\n{%- include \"SnippetInfo\" %}\n{%- include \"Outline\" %}\n{%- include \"DetailedOutline\" %}\n{%- if scene.hasPreviousText %}\n\t<PreviousText>\n\t\t{{ scene.previousText }}\n\t</PreviousText>\n{%- endif %}\n{%- if scene.hasFollowText %}\n\t<FollowingText>\n\t\t{{ scene.followText }}\n\t</FollowingText>\n{%- endif %}\n<Instruction>\n\t{{ instruction.text }}\n</Instruction>\n\n现在，请参考以上的信息，按照指定的格式生成<Instruction>要求的叙事文本。不要使用诸如“根据你提供的文本……”或“以下是……”等开场白（Meta-text），请直接切入叙事文本。"
+            "content": "{%- include \"TermKnowledge\" %}\n{%- include \"SnippetInfo\" %}\n{%- include \"AdditionalInfo\" %}\n{%- include \"Outline\" %}\n{%- include \"DetailedOutline\" %}\n{%- if scene.hasPreviousText %}\n\n<PreviousText>\n{{ scene.previousText }}\n</PreviousText>\n{%- endif %}\n{%- if scene.hasFollowText %}\n\n<FollowingText>\n{{ scene.followText }}\n</FollowingText>\n{%- endif %}\n\n<Instruction>\n{{ instruction.text }}\n</Instruction>\n\n现在，请参考以上的信息，按照指定的格式生成<Instruction>要求的叙事文本。不要使用诸如“根据你提供的文本……”或“以下是……”等开场白（Meta-text），请直接切入叙事文本。"
           }
         ],
         "inputs": [
@@ -72,7 +72,7 @@
                   }
                 },
                 "label": {
-                  "enabled": false,
+                  "enabled": true,
                   "actTreatAs": "summary",
                   "sceneTreatAs": "full_text"
                 },
@@ -88,7 +88,7 @@
                   }
                 },
                 "termTag": {
-                  "enabled": false
+                  "enabled": true
                 }
               }
             }
@@ -162,7 +162,7 @@
       {
         "name": "Identity",
         "category": "component",
-        "description": null,
+        "description": "定义小说创作助手的身份、专业能力和中文回复要求。",
         "messages": [
           {
             "id": "5650ab1f-17e3-46b6-9c64-81c5558015d1",
@@ -179,12 +179,12 @@
       {
         "name": "WritingStyle",
         "category": "component",
-        "description": null,
+        "description": "组织文风约束，引用 CommonAIMistakes 中的常见写作问题与改进规则。",
         "messages": [
           {
             "id": "3a084dd3-2ee4-43ee-b805-44a3c0fa4f6b",
             "role": "assistant",
-            "content": "<WritingStyle>\n\t{%- include \"CommonAIMistakes\" %}\n</WritingStyle>"
+            "content": "<WritingStyle>\n{% include \"CommonAIMistakes\" %}\n</WritingStyle>"
           }
         ],
         "inputs": [],
@@ -196,12 +196,12 @@
       {
         "name": "TermKnowledge",
         "category": "component",
-        "description": null,
+        "description": "合并续写指令、额外信息中所选词条与词条标记，以及当前或所选细纲提及的词条，去重后输出完整知识。",
         "messages": [
           {
             "id": "940e3324-511d-4b5e-ac62-28da88f78ac0",
             "role": "assistant",
-            "content": "{%- set terms = instruction.terms | union(inputs[\"额外信息\"].term) | union(inputs[\"额外信息\"].termTag) %}\n{%- if terms.count %}\n\t<TermKnowledge>\n\n\t\t{{ terms.value }}\n\n\t</TermKnowledge>\n{%- endif %}"
+            "content": "{%- set outlineTerms = termsfrom(scene.actOutline, scene.chapterOutline, inputs[\"额外信息\"].actOutline, inputs[\"额外信息\"].chapterOutline) %}\n{%- set terms = instruction.terms | union(inputs[\"额外信息\"].term) | union(inputs[\"额外信息\"].termTag) | union(outlineTerms) %}\n{%- if terms.count %}\n\n<TermKnowledge>\n{{ terms.value }}\n</TermKnowledge>\n{%- endif %}"
           }
         ],
         "inputs": [],
@@ -213,12 +213,29 @@
       {
         "name": "SnippetInfo",
         "category": "component",
-        "description": null,
+        "description": "输出“额外信息”中选择的片段，提供作者的补充说明和参考内容。",
         "messages": [
           {
             "id": "21d001d4-c7a8-4e1b-9d37-67f52fbf1905",
             "role": "assistant",
-            "content": "{% if inputs[\"额外信息\"].snippet.count %}\n\t<SnippetInfo>\n\n\t\t{{ inputs[\"额外信息\"].snippet.value }}\n\n\t</SnippetInfo>\n{% endif %}"
+            "content": "{%- if inputs[\"额外信息\"].snippet.value %}\n\n<SnippetInfo>\n{{ inputs[\"额外信息\"].snippet.value }}\n</SnippetInfo>\n{%- endif %}"
+          }
+        ],
+        "inputs": [],
+        "isNsfw": false,
+        "allowLlmCall": false,
+        "allowAgentCall": false,
+        "agentCallMode": "generate_then_agent"
+      },
+      {
+        "name": "AdditionalInfo",
+        "category": "component",
+        "description": "输出“额外信息”中选择的全书、卷、章、场景及标签关联的正文或摘要，作为需要重点关注的补充资料。",
+        "messages": [
+          {
+            "id": "80ca5623-b94b-4237-8e33-f5bb3427c8dc",
+            "role": "assistant",
+            "content": "{%- set additional = inputs[\"额外信息\"] %}\n{%- if additional.fullNovel.value or additional.act.value or additional.chapter.value or additional.scene.value %}\n\n<AdditionalInfo>\n以下是作者指定需要重点关注的补充正文或摘要。请结合本次写作要求或问题，关注其中的情节、背景和细节。\n{%- if additional.fullNovel.value %}\n\n{{ additional.fullNovel.value }}\n{%- endif %}\n{%- if additional.act.value %}\n\n{{ additional.act.value }}\n{%- endif %}\n{%- if additional.chapter.value %}\n\n{{ additional.chapter.value }}\n{%- endif %}\n{%- if additional.scene.value %}\n\n{{ additional.scene.value }}\n{%- endif %}\n</AdditionalInfo>\n{%- endif %}"
           }
         ],
         "inputs": [],
@@ -230,12 +247,12 @@
       {
         "name": "Outline",
         "category": "component",
-        "description": null,
+        "description": "提供当前执行位置之前的故事摘要，帮助保持情节连贯。",
         "messages": [
           {
             "id": "ece9be5d-5f5b-4c81-8149-a0b30e5ad4c4",
             "role": "assistant",
-            "content": "<Outline>\n\n\t{{ novel.outline }}\n\n</Outline>"
+            "content": "{%- if novel.outline.storysofar %}\n\n<Outline>\n{{ novel.outline }}\n</Outline>\n{%- endif %}"
           }
         ],
         "inputs": [],
@@ -247,12 +264,12 @@
       {
         "name": "DetailedOutline",
         "category": "component",
-        "description": null,
+        "description": "提供当前卷、章的细纲；对应细纲为空时，使用“额外信息”中选择的卷纲或章纲。",
         "messages": [
           {
             "id": "2a546209-a531-4e36-bf1c-dbe9a4bbbac7",
             "role": "assistant",
-            "content": "{%- set actOutlineText = scene.actOutline or inputs[\"额外信息\"].actOutline.value %}\n{%- set chapterOutlineText = scene.chapterOutline or inputs[\"额外信息\"].chapterOutline.value %}\n{%- if actOutlineText or chapterOutlineText %}\n\t<DetailedOutline>\n\t\t{%- if actOutlineText %}\n\n\t\t\t<ActOutline>\n\t\t\t\t{{ actOutlineText }}\n\t\t\t</ActOutline>\n\t\t{%- endif %}\n\t\t{%- if chapterOutlineText %}\n\n\t\t\t<ChapterOutline>\n\t\t\t\t{{ chapterOutlineText }}\n\t\t\t</ChapterOutline>\n\t\t{%- endif %}\n\n\t</DetailedOutline>\n{%- endif %}"
+            "content": "{%- set actOutlineText = scene.actOutline or inputs[\"额外信息\"].actOutline.value %}\n{%- set chapterOutlineText = scene.chapterOutline or inputs[\"额外信息\"].chapterOutline.value %}\n{%- if actOutlineText or chapterOutlineText %}\n\n<DetailedOutline>\n{%- if actOutlineText %}\n<ActOutline>\n{{ actOutlineText }}\n</ActOutline>\n{%- endif %}\n{%- if chapterOutlineText %}\n<ChapterOutline>\n{{ chapterOutlineText }}\n</ChapterOutline>\n{%- endif %}\n</DetailedOutline>\n{%- endif %}"
           }
         ],
         "inputs": [],
@@ -264,7 +281,7 @@
       {
         "name": "CommonAIMistakes",
         "category": "component",
-        "description": null,
+        "description": "提供减少套话、过度解释和重复描写等常见 AI 写作问题的规则与示例，并保持语言和文风一致。",
         "messages": [
           {
             "id": "880349a6-05fe-49de-b32d-bf0b899e6c09",

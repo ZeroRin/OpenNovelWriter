@@ -11,17 +11,7 @@ function collapseWhitespace(value: string) {
     return value.replace(/\s+/g, ' ').trim()
 }
 
-/**
- * Merge a completed `agentMessage` into text already streamed as deltas.
- *
- * Grok / xAI often emit a short preamble, run server-side `web_search`, then
- * deliver the full reply only on `item/completed`. If we keep the first
- * streamed sentence and ignore the completed item, the UI stops after search.
- *
- * DeepSeek and similar models stream the full reply as deltas, then send the
- * same text again on `item/completed` (sometimes with different trailing
- * whitespace). Concatenating those copies duplicates the bubble.
- */
+/** Reconcile one native message's completed text with its streamed content. */
 export function mergeCompletedAssistantText(streamed: string, completed: string): ReconciledAssistantText {
     if (!completed) return { assistantText: streamed, delta: '' }
     if (!streamed) return { assistantText: completed, delta: completed }

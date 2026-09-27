@@ -4,8 +4,8 @@
   "metadata": {
     "presetId": "skill-vr44hb",
     "name": "预设-场景续写",
-    "description": "示例skill，如何在场景续写中调用组装好的提示词",
-    "revision": 1.2,
+    "description": "用户提供续写面板 ID 并交代后续任务时，检查面板提示词、生成或修改草稿",
+    "revision": 1.5,
     "enabled": true,
     "exportedAt": "2026-06-20T08:49:24.759Z"
   },

@@ -1,3 +1,4 @@
+import { normalizeCodexSubagent } from '@/lib/codex-subagents'
 import { isCodexArtifactFileName } from '@/lib/codex-artifacts'
 import { projectCodexMessage } from '@/lib/server/codex-message-projection'
 import { getCodexSessionPreviewTitle, getCodexSessionPreviewText } from '@/lib/codex-message-preview'
@@ -241,6 +242,7 @@ export function parseCodexSessionMessages(value: string | null | undefined): Cod
                 const content = normalizeCodexString(record.content)
                 const createdAt = normalizeCodexStringId(record.createdAt) ?? new Date().toISOString()
                 const kind = typeof record.kind === 'string' && record.kind.trim() ? record.kind.trim() : null
+                const subagent = normalizeCodexSubagent(record.subagent)
                 const contextWindow = normalizeCodexContextWindow(record.contextWindow)
                 const attachments = Array.isArray(record.attachments)
                     ? record.attachments.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
@@ -255,6 +257,7 @@ export function parseCodexSessionMessages(value: string | null | undefined): Cod
                     role,
                     content,
                     kind,
+                    ...(subagent ? { subagent } : {}),
                     contextWindow,
                     ...(record.workStatus === 'running' || record.workStatus === 'completed' || record.workStatus === 'failed' || record.workStatus === 'declined' ? { workStatus: record.workStatus } : {}),
                     ...(typeof record.toolInput === 'string' ? { toolInput: record.toolInput } : {}),
@@ -319,6 +322,7 @@ export function serializeCodexSessionSummary(record: CodexSessionRecord, message
 
     return {
         id: record.id,
+        continuationPanelId: record.continuationPanelId,
         category: normalizeCodexSessionCategory(record.category) ?? 'general',
         title: record.title,
         titleManuallyEdited: record.titleManuallyEdited,

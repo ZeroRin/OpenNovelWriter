@@ -16,6 +16,7 @@ import {
     Loader2,
     MessageSquareText,
     Pencil,
+    Plus,
     RotateCcw,
     Save,
     SendHorizonal,
@@ -43,6 +44,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { ChatTurnNavigator } from '@/components/editor/chat-turn-navigator'
 import { PreviewInputCard } from '@/components/editor/prompt-inputs-editor/preview-input-card'
 import { PreviewRenderedSection } from '@/components/editor/prompt-inputs-editor/preview-rendered-section'
 import { useInputsEditorModel, type PersistedInputsEditorPreviewState } from '@/components/editor/prompt-inputs-editor/model'
@@ -59,6 +61,7 @@ import type { ModelGroup } from '@/lib/ai-store'
 import { promptApi, snippetApi, type Prompt, type PromptDefaultSelection } from '@/lib/api'
 import { getAvailableModelAssignments, runModelGroupWithFallback, type ModelTokenUsage } from '@/lib/ai-runner'
 import { isVisionCapableModelGroup } from '@/lib/ai-group-config'
+import { buildChatRequestMessages, createChatPromptSnapshot, getChatContextHistory } from '@/lib/ai-chat-messages'
 import type { PromptMessage } from '@/lib/prompts'
 import { analyzeChatPromptMessages } from '@/lib/prompt-template'
 import { invalidateAiChatMenuDataCache, loadAiChatMenuData } from '@/lib/ai-chat-menu-data'
@@ -162,92 +165,6 @@ function safeCopyLocalStorageItem(sourceKey: string | null, targetKey: string | 
     }
 }
 
-function normalizeBlock(block: string) {
-    return block.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim()
-}
-
-function splitContentBlocks(text: string) {
-    return (text ?? '')
-        .replace(/\r\n?/g, '\n')
-        .split(/\n[ \t]*\n+/u)
-        .map((block) => block.trim())
-        .filter(Boolean)
-}
-
-function dedupeRenderedUserContent(params: {
-    fullContent: string
-    protectedBlock: string
-    historyMessages: Array<Pick<EditorChatMessage, 'role' | 'content' | 'sentContent'>>
-}) {
-    const fullContent = params.fullContent.trim()
-    if (!fullContent) return ''
-
-    const seen = new Set<string>()
-    for (const message of params.historyMessages) {
-        if (message.role !== 'user') continue
-        const sentContent = (message.sentContent ?? message.content ?? '').trim()
-        if (!sentContent) continue
-        for (const block of splitContentBlocks(sentContent)) {
-            const normalized = normalizeBlock(block)
-            if (normalized) seen.add(normalized)
-        }
-    }
-
-    if (seen.size === 0) return fullContent
-
-    const protectedBlock = normalizeBlock(params.protectedBlock)
-    const nextBlocks = splitContentBlocks(fullContent).filter((block) => {
-        const normalized = normalizeBlock(block)
-        if (!normalized) return false
-        if (protectedBlock && normalized === protectedBlock) return true
-        return !seen.has(normalized)
-    })
-
-    return nextBlocks.join('\n\n').trim()
-}
-
-function buildChatPromptMessages(params: {
-    prompt: Prompt | null
-    historyMessages: Array<Pick<EditorChatMessage, 'id' | 'role' | 'content' | 'sentContent'>>
-}) {
-    const promptMessages = params.prompt?.messages ?? []
-    if (promptMessages.length === 0) return []
-
-    const prefixMessages = promptMessages.slice(0, -1)
-    const lastUserMessage = promptMessages[promptMessages.length - 1] ?? null
-
-    return [
-        ...prefixMessages,
-        ...params.historyMessages.map(
-            (message): PromptMessage => ({
-                id: `chat_history_${message.id}`,
-                role: message.role,
-                content: message.role === 'user' ? message.sentContent ?? message.content : message.content,
-            })
-        ),
-        ...(lastUserMessage ? [lastUserMessage] : []),
-    ]
-}
-
-function buildStoredChatPromptMessages(params: {
-    prompt: Prompt | null
-    historyMessages: Array<Pick<EditorChatMessage, 'id' | 'role' | 'content' | 'sentContent'>>
-}) {
-    const promptMessages = params.prompt?.messages ?? []
-    const prefixMessages = promptMessages.slice(0, Math.max(0, promptMessages.length - 1))
-
-    return [
-        ...prefixMessages,
-        ...params.historyMessages.map(
-            (message): PromptMessage => ({
-                id: `chat_history_${message.id}`,
-                role: message.role,
-                content: message.role === 'user' ? message.sentContent ?? message.content : message.content,
-            })
-        ),
-    ].filter((message) => message.content.trim())
-}
-
 function normalizeUsageToken(value: number | undefined) {
     return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
 }
@@ -299,6 +216,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
     const [loadError, setLoadError] = useState<string | null>(null)
     const [runError, setRunError] = useState<string | null>(null)
     const [generating, setGenerating] = useState(false)
+    const [creatingConversation, setCreatingConversation] = useState(false)
     const [selectedGroupId, setSelectedGroupId] = useState('')
     const [tweakTab, setTweakTab] = useState<'tweak' | 'preview'>('tweak')
     const [resultText, setResultText] = useState('')
@@ -311,14 +229,16 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
     const [editingContent, setEditingContent] = useState('')
     const [messageActionBusy, setMessageActionBusy] = useState(false)
     const [lockedUserInput, setLockedUserInput] = useState<string | null>(null)
+    const [lockedRequestMessages, setLockedRequestMessages] = useState<PromptMessage[] | null>(null)
     const [lockedUserTermIds, setLockedUserTermIds] = useState<string[]>([])
     const [lockedHistoryMessages, setLockedHistoryMessages] = useState<
-        Array<Pick<EditorChatMessage, 'id' | 'role' | 'content' | 'sentContent' | 'termIds'>> | null
+        Array<Pick<EditorChatMessage, 'id' | 'role' | 'content' | 'sentContent' | 'termIds' | 'renderState'>> | null
     >(null)
     const [attachmentHint, setAttachmentHint] = useState<string | null>(null)
     const generateAbortRef = useRef<AbortController | null>(null)
     const attachmentHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const fileInputRef = useRef<HTMLInputElement | null>(null)
+    const scrollAreaRef = useRef<HTMLDivElement | null>(null)
     const latestInputStateRef = useRef<PersistedInputsEditorPreviewState | null>(null)
     const persistedInputStateJsonRef = useRef<string | null>(null)
     const persistInputStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -356,6 +276,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
         setReasoningExpanded(false)
         setRunStatus('idle')
         setLockedUserInput(null)
+        setLockedRequestMessages(null)
         setLockedUserTermIds([])
         setLockedHistoryMessages(null)
         setTweakTab('tweak')
@@ -441,7 +362,8 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
         return prompts.filter((prompt) => !excludedIds.has(prompt.id))
     }, [defaultSelection?.promptId, promptSelection, prompts])
 
-    const activePrompt = selectedConversation?.promptSnapshot ?? selectedPrompt
+    const promptSnapshot = selectedConversation?.promptSnapshot
+    const activePrompt = promptSnapshot ?? selectedPrompt
     const promptLocked = Boolean(selectedConversation?.promptSnapshot || selectedConversation?.messages.length)
     const promptGroups = useMemo(() => getPromptGroups(activePrompt, groups), [activePrompt, groups])
     const runnableGroups = useMemo(
@@ -510,14 +432,6 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
     const termEntriesById = useMemo(() => new Map(termEntries.map((entry) => [entry.id, entry])), [termEntries])
     const termMentionMatcher = useMemo(() => buildTermMentionMatcher(termEntries), [termEntries])
     const detectedTermIds = useMemo(() => findMentionedTermIds(draft, termMentionMatcher), [draft, termMentionMatcher])
-    const detectedTermEntries = useMemo(() => {
-        const usedEntries = [...detectedTermIds]
-            .map((id) => termEntriesById.get(id) ?? null)
-            .filter((entry): entry is TermEntry => entry !== null)
-
-        usedEntries.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
-        return usedEntries
-    }, [detectedTermIds, termEntriesById])
     const previewUserInput = lockedUserInput ?? draft
     const previewUserInputTermIds = useMemo(
         () =>
@@ -534,17 +448,17 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             role: message.role,
             content: message.content,
             sentContent: message.sentContent,
+            renderState: message.renderState,
             termIds: message.termIds,
         }))
     }, [lockedHistoryMessages, selectedConversation?.messages])
     const previewMessages = useMemo(
-        () =>
-            buildChatPromptMessages({
-                prompt: activePrompt,
-                historyMessages: previewHistoryMessages,
-            }),
-        [activePrompt, previewHistoryMessages]
+        () => promptSnapshot?.chatContext ? activePrompt?.messages.slice(-1) ?? [] : activePrompt?.messages ?? [],
+        [activePrompt, promptSnapshot]
     )
+    const chatRenderOptions = useMemo(() => ({
+        previousContextItems: getChatContextHistory(previewHistoryMessages),
+    }), [previewHistoryMessages])
     const previewChatHistoryText = useMemo(
         () =>
             previewHistoryMessages
@@ -600,7 +514,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
         messages: previewMessages,
         promptId: activePrompt?.id,
         promptCategory: String(activePrompt?.category ?? 'ai_chat'),
-        allPrompts: componentPrompts ?? undefined,
+        allPrompts: promptSnapshot?.chatContext?.components ?? componentPrompts ?? undefined,
         novelId,
         previewStateStorageKey,
         persistedPreviewState: selectedConversation?.inputState as PersistedInputsEditorPreviewState | null | undefined,
@@ -609,15 +523,24 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
         chatUserInputTerms: previewUserInputTermIds,
         chatHistoryText: previewChatHistoryText,
         chatHistoryTerms: previewChatHistoryTermIds,
+        chatRenderOptions,
     })
 
-    const renderedMessages = useMemo(
-        () =>
-            model.renderedMessages
-                .map((message) => ({ id: message.id, role: message.role, content: message.content }))
-                .filter((message) => message.content.trim()),
-        [model.renderedMessages]
-    )
+    const currentTurnTermEntries = useMemo(() => {
+        const ids = new Set((model.renderedChatState?.contextItems ?? [])
+            .filter((item) => item.key.startsWith('term:'))
+            .map((item) => item.key.slice('term:'.length)))
+        return [...ids]
+            .map((id) => termEntriesById.get(id))
+            .filter((entry): entry is TermEntry => Boolean(entry))
+            .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
+    }, [model.renderedChatState, termEntriesById])
+
+    const prefixMessages = useMemo(() => promptSnapshot?.chatContext?.prefixMessages ?? model.renderedMessages.slice(0, -1),
+        [model.renderedMessages, promptSnapshot])
+    const renderedMessages = useMemo(() => buildChatRequestMessages(
+        prefixMessages, previewHistoryMessages, model.renderedMessages.at(-1),
+    ), [model.renderedMessages, prefixMessages, previewHistoryMessages])
     const clearContentSelectionPreviewState = model.setContentSelectionPreviewStateByInputId
     const promptDisabledReason = getPromptRunDisabledReason(activePrompt, groups)
     const missingRequired = model.missingRequiredInputNames.length > 0
@@ -628,7 +551,8 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
         Boolean(activePrompt) &&
         Boolean(selectedGroup) &&
         getAvailableModelAssignments(selectedGroup).length > 0 &&
-        renderedMessages.length > 0
+        renderedMessages.length > 0 &&
+        !!model.renderedChatState?.userInput
     const hasRetainedRunState = Boolean(resultText) || Boolean(reasoningText) || Boolean(runError) || lockedUserInput !== null
     const showRunState = generating || hasRetainedRunState
     const showTerminateButton = generating || generateAbortRef.current !== null
@@ -867,10 +791,8 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
                     .filter((message) => message.role === 'user' && message.attachments.length > 0)
                     .map((message) => [`chat_history_${message.id}`, message.attachments])
             )
-            const requestMessages = buildStoredChatPromptMessages({
-                prompt: selectedConversation.promptSnapshot ?? activePrompt,
-                historyMessages,
-            }).map((message) => {
+            const storedMessages = buildChatRequestMessages(prefixMessages, historyMessages)
+            const requestMessages = storedMessages.map((message) => {
                 const images = visionBlocked ? undefined : historyImagesById.get(message.id)
                 return { role: message.role, content: message.content, ...(images ? { images } : {}) }
             })
@@ -885,6 +807,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             setReasoningExpanded(false)
             setRunStatus('running')
             setLockedUserInput(messages[userIndex]?.content ?? '')
+            setLockedRequestMessages(storedMessages)
             setLockedUserTermIds(messages[userIndex]?.termIds ?? [])
             setLockedHistoryMessages(messages.slice(0, userIndex))
             setTweakTab('preview')
@@ -902,6 +825,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
                 const result = await runModelGroupWithFallback({
                     group: selectedGroup,
                     input: {
+                        sessionId: selectedConversation.id,
                         temperature: selectedGroup.settings.temperature ?? undefined,
                         maxTokens: selectedGroup.settings.maxTokens ?? undefined,
                         messages: requestMessages,
@@ -948,7 +872,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             }
         },
         [
-            activePrompt,
+            prefixMessages,
             appendMessage,
             deleteMessages,
             generating,
@@ -972,6 +896,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             role: message.role,
             content: message.content,
             sentContent: message.sentContent,
+            renderState: message.renderState,
             termIds: message.termIds,
         })) ?? []
         // User images are resent because chat provider APIs are stateless.
@@ -985,28 +910,14 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             const images = historyId && !visionBlocked ? historyImagesById.get(historyId) : undefined
             return { role: message.role, content: message.content, ...(images ? { images } : {}) }
         })
-        let fullRenderedUserContent = ''
-        let sentUserContent = ''
-        for (let index = requestMessages.length - 1; index >= 0; index -= 1) {
-            if (requestMessages[index]?.role !== 'user') continue
-            fullRenderedUserContent = requestMessages[index].content
-            sentUserContent = dedupeRenderedUserContent({
-                fullContent: fullRenderedUserContent,
-                protectedBlock: model.renderedChatUserInputBlock,
-                historyMessages,
-            })
-            requestMessages[index] = {
-                ...requestMessages[index],
-                content: sentUserContent || content,
-                ...(attachments.length > 0 && !visionBlocked ? { images: attachments } : {}),
-            }
-            break
-        }
+        const sentUserContent = model.renderedMessages.at(-1)?.content ?? content
+        const lastMessage = requestMessages.at(-1)
+        if (lastMessage && attachments.length > 0 && !visionBlocked) lastMessage.images = attachments
 
-        if (activePrompt && !selectedConversation?.promptSnapshot) {
+        if (activePrompt && !promptSnapshot) {
             await updateConversation(novelId, conversationId, {
                 promptId: activePrompt.id,
-                promptSnapshot: activePrompt,
+                promptSnapshot: createChatPromptSnapshot(activePrompt, componentPrompts ?? [], prefixMessages),
                 inputState: latestInputStateRef.current,
             })
         }
@@ -1017,7 +928,8 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             role: 'user',
             content,
             sentContent: sentUserContent || content,
-            fullRenderedContent: fullRenderedUserContent || sentUserContent || content,
+            fullRenderedContent: sentUserContent,
+            renderState: model.renderedChatState,
             termIds: [...detectedTermIds],
             attachments,
         })
@@ -1037,6 +949,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
         setReasoningExpanded(false)
         setRunStatus('running')
         setLockedUserInput(content)
+        setLockedRequestMessages(renderedMessages)
         setLockedUserTermIds([...detectedTermIds])
         setLockedHistoryMessages(historyMessages)
         setTweakTab('preview')
@@ -1051,6 +964,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             const result = await runModelGroupWithFallback({
                 group: selectedGroup,
                 input: {
+                    sessionId: conversationId,
                     temperature: selectedGroup.settings.temperature ?? undefined,
                     maxTokens: selectedGroup.settings.maxTokens ?? undefined,
                     messages: requestMessages,
@@ -1105,10 +1019,13 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
         visionBlocked,
         activePrompt,
         novelId,
-        model.renderedChatUserInputBlock,
+        model.renderedChatState,
+        model.renderedMessages,
+        prefixMessages,
+        promptSnapshot,
+        componentPrompts,
         renderedMessages,
         selectedConversation?.messages,
-        selectedConversation?.promptSnapshot,
         selectedGroup,
         t,
         updateConversation,
@@ -1118,6 +1035,35 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
     return (
         <ImageViewerExtraActionsProvider render={(src) => <TermGalleryImportButton novelId={novelId} src={src} />}>
         <div className="relative flex h-full min-h-0 flex-col bg-background">
+            <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <MessageSquareText className="h-4 w-4 shrink-0 text-primary" />
+                    <span className="truncate text-sm font-medium" title={selectedConversation?.title || t('infoPanel.chatTitle')}>
+                        {selectedConversation?.title || t('infoPanel.chatTitle')}
+                    </span>
+                </div>
+                <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    disabled={generating || creatingConversation || messageActionBusy}
+                    onClick={async () => {
+                        setCreatingConversation(true)
+                        setRunError(null)
+                        try {
+                            await handleCreateConversation()
+                        } catch (error) {
+                            setRunError(error instanceof Error ? error.message : String(error))
+                        } finally {
+                            setCreatingConversation(false)
+                        }
+                    }}
+                    title={t('infoPanel.chatCreate')}
+                    aria-label={t('infoPanel.chatCreate')}
+                >
+                    {creatingConversation ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                </Button>
+            </div>
             <Dialog open={tweakOpen} onOpenChange={handleTweakOpenChange}>
                 <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-y-auto">
                     <div className="space-y-4">
@@ -1308,7 +1254,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
                             </div>
                         ) : (
                             <div className="space-y-4">
-                                <PreviewRenderedSection model={model} showInputs={false} />
+                                <PreviewRenderedSection model={{ ...model, renderedMessages: lockedRequestMessages ?? renderedMessages }} showInputs={false} />
 
                                 {showRunState && (
                                     <div className="rounded-md border bg-card p-4">
@@ -1441,7 +1387,8 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
                 </DialogContent>
             </Dialog>
 
-            <ScrollArea className="flex-1 min-h-0">
+            <div className="relative flex min-h-0 flex-1 flex-col">
+            <ScrollArea ref={scrollAreaRef} className="flex-1 min-h-0">
                 <div className="space-y-3 px-3 py-3">
                     {selectedConversation?.messages.length ? (
                         selectedConversation.messages.map((message) => {
@@ -1464,6 +1411,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
                             return (
                                 <div
                                     key={message.id}
+                                    data-chat-message-id={message.id}
                                     className={cn(
                                         'group flex items-start gap-2 rounded-2xl p-2 transition-colors',
                                         selectionMode && 'cursor-pointer hover:bg-muted/30',
@@ -1680,6 +1628,10 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
                     )}
                 </div>
             </ScrollArea>
+            {selectedConversation && (
+                <ChatTurnNavigator key={selectedConversation.id} messages={selectedConversation.messages} scrollAreaRef={scrollAreaRef} />
+            )}
+            </div>
 
             {selectionMode && selectedMessages.length > 0 && (
                 <div className="pointer-events-none absolute inset-x-0 bottom-32 z-10 flex justify-center px-4">
@@ -1739,7 +1691,7 @@ export function RightPanelChat({ novelId, tweakOpen, onTweakOpenChange }: RightP
             <div className="border-t bg-background px-3 py-3">
                 <div className="mb-2 flex items-start justify-between gap-2">
                     <div className="flex min-w-0 flex-1 flex-wrap gap-1 px-1">
-                        {detectedTermEntries.map((entry) => {
+                        {currentTurnTermEntries.map((entry) => {
                             const colorId = getTermEntryColorId(entry.color)
                             const colorClasses = getTermEntryColorClasses(colorId)
                             const hasCustomColor = colorId !== 'black'

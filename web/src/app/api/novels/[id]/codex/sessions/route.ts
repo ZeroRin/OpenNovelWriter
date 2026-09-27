@@ -18,7 +18,6 @@ import {
 } from '@/lib/server/codex-session'
 import { getNewCodexSessionModelSettings, isCodexFastModeAllowed } from '@/lib/codex-config'
 import { getActiveCodexRun } from '@/lib/server/codex-app-server'
-import { seedSkillSessionArtifact } from '@/lib/server/codex-skill-session'
 import { pruneCodexSessionsForCategory } from '@/lib/server/codex-session-pruning'
 
 interface RouteContext {
@@ -120,11 +119,22 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
             ? normalizeCodexServiceTier(body?.serviceTier) ?? DEFAULT_CODEX_SERVICE_TIER
             : DEFAULT_CODEX_SERVICE_TIER
 
+        const panelId = category === 'scene_continuation' ? normalizeCodexStringId(body?.panelId) : null
+        if (category === 'scene_continuation') {
+            const draft = panelId ? await prisma.sceneContinuationDraft.findFirst({ where: { panelId, novelId, novel: { ownerId: user.userId } } }) : null
+            if (!draft) return NextResponse.json({ detail: 'Continuation panel not found.' }, { status: 400 })
+            if (draft.codexSessionId) {
+                const linked = await prisma.codexSession.findFirst({ where: { id: draft.codexSessionId, ownerId: user.userId } })
+                if (linked) return NextResponse.json({ session: serializeCodexSession(linked), codexSessionCleanup: { deletedSessionIds: [] } })
+            }
+        }
+
         const now = new Date()
         const session = await prisma.codexSession.create({
             data: {
                 id: normalizeCodexStringId(body?.id) ?? undefined,
                 category,
+                continuationPanelId: panelId,
                 title: normalizeCodexStringId(body?.title),
                 titleManuallyEdited: body?.titleManuallyEdited === true,
                 reviewLevel: normalizeCodexReviewLevel(body?.reviewLevel) ?? DEFAULT_CODEX_REVIEW_LEVEL,
@@ -148,66 +158,8 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
             },
         })
 
-        if (category === 'scene_operation') {
-            const skillId = normalizeCodexStringId(body?.skillId)
-            const sceneId = normalizeCodexStringId(body?.sceneId)
-            if (skillId && sceneId) {
-                try {
-                    await seedSkillSessionArtifact({
-                        ownerId: user.userId,
-                        novelId,
-                        sessionId: session.id,
-                        skillId,
-                        sceneId,
-                    })
-                } catch (seedError) {
-                    console.error('Seed scene-operation skill artifact error:', seedError)
-                }
-            }
-        }
-
-        if (category === 'scene_continuation') {
-            const skillId = normalizeCodexStringId(body?.skillId)
-            const sceneId = normalizeCodexStringId(body?.sceneId)
-            const chapterId = normalizeCodexStringId(body?.chapterId)
-            const panelId = normalizeCodexStringId(body?.panelId)
-            const renderedBlocks = Array.isArray(body?.renderedBlocks)
-                ? (body.renderedBlocks as unknown[])
-                    .map((block) => {
-                        const record = block as { role?: unknown; text?: unknown }
-                        return typeof record?.role === 'string' && typeof record?.text === 'string'
-                            ? { role: record.role, text: record.text }
-                            : null
-                    })
-                    .filter((block): block is { role: string; text: string } => block !== null)
-                : undefined
-
-            if (skillId && sceneId && chapterId && panelId) {
-                // Pair the inline panel with this session via a shared continuation draft, then
-                // pre-assemble the author-resolved prompt into the session artifacts.
-                try {
-                    await prisma.sceneContinuationDraft.upsert({
-                        where: { panelId },
-                        create: { panelId, novelId, sceneId, chapterId, codexSessionId: session.id, skillId },
-                        update: { codexSessionId: session.id, skillId, sceneId, chapterId },
-                    })
-                } catch (draftError) {
-                    console.error('Create continuation draft error:', draftError)
-                }
-                try {
-                    await seedSkillSessionArtifact({
-                        ownerId: user.userId,
-                        novelId,
-                        sessionId: session.id,
-                        skillId,
-                        sceneId,
-                        renderedBlocks,
-                        panelId,
-                    })
-                } catch (seedError) {
-                    console.error('Seed scene-continuation skill artifact error:', seedError)
-                }
-            }
+        if (panelId) {
+            await prisma.sceneContinuationDraft.update({ where: { panelId }, data: { codexSessionId: session.id } })
         }
 
         let codexSessionCleanup = { deletedSessionIds: [] as string[] }

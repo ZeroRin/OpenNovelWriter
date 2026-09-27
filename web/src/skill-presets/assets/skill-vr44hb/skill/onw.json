@@ -1,6 +1,5 @@
 {
   "schema": "open-novel-writer/skill",
   "version": 1,
-  "category": "scene_continuation",
-  "prompt": "预设-通用续写"
+  "category": "scene_continuation"
 }

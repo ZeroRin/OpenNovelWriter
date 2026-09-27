@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import { expandNativeCodexModels, parseCodexProviderModelsJson, parseCodexUpstreamFormat } from '@/lib/codex-config'
+import { isGptCodexModelId, parseCodexProviderModelsJson, parseCodexUpstreamFormat } from '@/lib/codex-config'
+import { readCodexNativeModels, resolveCodexProviderModels } from '@/lib/server/codex-native-models'
+import { getCodexConnectionHome } from '@/lib/server/codex-connection-storage'
 import { isOfficialDeepSeekAnthropicProvider } from '@/lib/codex-deepseek'
 import { getPrismaClient } from '@/lib/db'
 import { decryptApiKey } from '@/lib/server/ai-credentials'
 import { isValidCodexProxyToken } from '@/lib/server/codex-internal-auth'
 import { createAnthropicToResponsesStream, readAnthropicSseAsResponses, responsesSseFromAnthropicMessage } from '@/lib/server/codex-proxy/anthropic-stream'
 import { anthropicResponseToResponses, responsesToAnthropicRequest } from '@/lib/server/codex-proxy/anthropic-transform'
+import { openAnthropicUpstream } from '@/lib/server/codex-proxy/anthropic-upstream'
 import { codexBridgeHistory } from '@/lib/server/codex-proxy/history'
 import { prepareCodexResponsesRequest } from '@/lib/server/codex-proxy/responses-request'
 import { createResponsesToolStream } from '@/lib/server/codex-proxy/responses-stream'
@@ -17,6 +20,7 @@ import {
     rewriteCompatibleResponsesResponse,
 } from '@/lib/server/codex-proxy/tool-context'
 import { chatCompletionToResponse, responsesToChatRequest } from '@/lib/server/codex-proxy/transform'
+import { getOpenCodeGoHeaders, OPENCODE_GO_SESSION_HEADER } from '@/lib/server/opencode-go'
 
 const prisma = getPrismaClient({ ensureModel: 'codexConnection' })
 
@@ -46,7 +50,10 @@ export async function handleCodexUpstreamRequest(input: {
     const upstreamFormat = parseCodexUpstreamFormat(connection.upstreamFormat)
     const baseUrl = connection.baseUrl?.trim().replace(/\/+$/, '')
     const encryptedApiKey = connection.encryptedApiKey
-    const models = expandNativeCodexModels(parseCodexProviderModelsJson(connection.modelsJson))
+    const configuredModels = parseCodexProviderModelsJson(connection.modelsJson)
+    const gptIds = configuredModels.filter((model) => isGptCodexModelId(model.id)).map((model) => model.id)
+    const models = resolveCodexProviderModels(configuredModels, gptIds.length > 0
+        ? await readCodexNativeModels(getCodexConnectionHome(connection.ownerId, connection.id), gptIds) : [])
     if (!upstreamFormat || !baseUrl || !encryptedApiKey || models.length === 0) {
         return NextResponse.json({ error: { message: 'Codex connection is incomplete.' } }, { status: 500 })
     }
@@ -108,7 +115,7 @@ async function proxyResponsesRequest(input: {
 }) {
     const upstream = await fetch(buildUrl(input.baseUrl, input.endpoint, input.request.nextUrl.search), {
         method: 'POST',
-        headers: upstreamHeaders(input.request, input.apiKey),
+        headers: upstreamHeaders(input.request, input.apiKey, input.baseUrl),
         body: JSON.stringify(input.body),
         signal: input.request.signal,
         cache: 'no-store',
@@ -143,7 +150,7 @@ async function proxyChatRequest(input: {
     const chatBody = responsesToChatRequest(enriched, input.model, input.context)
     const upstream = await fetch(buildUrl(input.baseUrl, 'chat/completions', input.request.nextUrl.search), {
         method: 'POST',
-        headers: upstreamHeaders(input.request, input.apiKey),
+        headers: upstreamHeaders(input.request, input.apiKey, input.baseUrl),
         body: JSON.stringify(chatBody),
         signal: input.request.signal,
         cache: 'no-store',
@@ -186,32 +193,19 @@ async function proxyAnthropicRequest(input: {
     const enriched = codexBridgeHistory.enrich(input.body)
     const webSearch = isOfficialDeepSeekAnthropicProvider('anthropic-messages', input.baseUrl)
     const anthropicBody = responsesToAnthropicRequest(enriched, input.context, { webSearch })
-    const requestedStream = anthropicBody.stream === true
-    if (webSearch) anthropicBody.stream = true
-    const send = (body: JsonObject) => fetch(buildAnthropicUrl(input.baseUrl, input.request.nextUrl.search), {
-        method: 'POST',
-        headers: anthropicHeaders(input.request, input.apiKey),
-        body: JSON.stringify(body),
-        signal: input.request.signal,
-        cache: 'no-store',
+    const { upstream, requestedStream, continueMessage } = await openAnthropicUpstream({
+        baseUrl: input.baseUrl, apiKey: input.apiKey, body: anthropicBody, webSearch,
+        signal: input.request.signal, userAgent: input.request.headers.get('user-agent'),
+        search: input.request.nextUrl.search,
+        headers: getOpenCodeGoHeaders(input.baseUrl, input.request.headers.get(OPENCODE_GO_SESSION_HEADER)),
     })
-    const upstream = await send(anthropicBody)
 
     if (!upstream.ok) return forwardUpstreamResponse(upstream)
     if (!upstream.body) throw new Error('Anthropic upstream returned an empty response body.')
 
-    const messages = [...anthropicBody.messages as JsonObject[]]
-    const continueMessage = webSearch ? async (message: JsonObject) => {
-        messages.push(message)
-        const next = await send({ ...anthropicBody, messages, tool_choice: { type: 'auto' } })
-        if (!next.ok) throw new Error(`Anthropic search continuation failed (${next.status}): ${(await next.text()).slice(0, 500)}`)
-        if (!next.body) throw new Error('Anthropic search continuation returned an empty response body.')
-        return next.body
-    } : undefined
-
     const contentType = upstream.headers.get('content-type') || ''
     const upstreamIsStream = contentType.includes('text/event-stream')
-        || (anthropicBody.stream === true && !contentType.includes('application/json'))
+        || ((webSearch || requestedStream) && !contentType.includes('application/json'))
     if (upstreamIsStream && requestedStream) {
         return new Response(createAnthropicToResponsesStream({
             upstream: upstream.body,
@@ -259,13 +253,7 @@ function buildUrl(baseUrl: string, endpoint: string, search: string) {
     return `${baseUrl}/${normalizedEndpoint}${search}`
 }
 
-function buildAnthropicUrl(baseUrl: string, search: string) {
-    if (/\/v1\/messages$/i.test(baseUrl)) return `${baseUrl}${search}`
-    if (/\/v1$/i.test(baseUrl)) return `${baseUrl}/messages${search}`
-    return `${baseUrl}/v1/messages${search}`
-}
-
-function upstreamHeaders(request: NextRequest, apiKey: string) {
+function upstreamHeaders(request: NextRequest, apiKey: string, baseUrl: string) {
     const headers = new Headers({
         authorization: `Bearer ${apiKey}`,
         'content-type': 'application/json',
@@ -273,18 +261,9 @@ function upstreamHeaders(request: NextRequest, apiKey: string) {
     })
     const userAgent = request.headers.get('user-agent')
     if (userAgent) headers.set('user-agent', userAgent)
-    return headers
-}
-
-function anthropicHeaders(request: NextRequest, apiKey: string) {
-    const headers = new Headers({
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        accept: 'application/json',
-    })
-    const userAgent = request.headers.get('user-agent')
-    if (userAgent) headers.set('user-agent', userAgent)
+    for (const [name, value] of Object.entries(getOpenCodeGoHeaders(baseUrl, request.headers.get(OPENCODE_GO_SESSION_HEADER)) ?? {})) {
+        headers.set(name, value)
+    }
     return headers
 }
 

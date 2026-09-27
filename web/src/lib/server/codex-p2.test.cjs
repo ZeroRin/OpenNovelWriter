@@ -10,10 +10,12 @@ const { createJiti } = require('jiti')
 const src = path.resolve(__dirname, '../..')
 const jiti = createJiti(__filename, { alias: { '@': src } })
 const pureModules = new Set([
+    '@/lib/codex-subagents', '@/lib/server/codex-subagent-history',
     '@/lib/server/codex-session', '@/lib/server/codex-assistant-text',
     '@/lib/server/codex-live-messages', '@/lib/server/codex-message-projection',
     '@/lib/server/codex-user-input-bridge',
     '@/lib/server/codex-reasoning-stream',
+    '@/lib/skills', '@/lib/codex-artifacts', '@/lib/server/codex-config-overrides',
     '@/lib/codex-response-annotations', '@/lib/codex-context-window', '@/lib/codex-config', '@/lib/codex-work-events',
 ])
 
@@ -25,6 +27,8 @@ function load(relativePath, mocks) {
     const module = { exports: {} }
     const localRequire = (name) => {
         if (Object.hasOwn(mocks, name)) return mocks[name]
+        if (name === '@/lib/server/codex-session-skills') return sessionSkills
+        if (name === '@/lib/server/codex-runtime-config') return { syncCodexConnectionRuntimeFiles: async () => '/unused-codex-home' }
         if (pureModules.has(name)) return jiti(name)
         if (name.startsWith('@/')) return {}
         return require(name)
@@ -32,6 +36,11 @@ function load(relativePath, mocks) {
     new Function('require', 'module', 'exports', output)(localRequire, module, module.exports)
     return module.exports
 }
+
+const sessionSkills = load('lib/server/codex-session-skills.ts', {
+    '@/lib/db': { getPrismaClient: () => ({ codexSession: { findFirstOrThrow: async () => ({ category: 'general' }) } }) },
+    '@/lib/server/skill-storage': { listSkills: async () => [], getUserSkillsRoot: () => '/unused-skills' },
+})
 
 test('annotation-only steering reaches the active turn through the route', async (t) => {
     const annotations = [{ text: 'Selected text', annotation: 'Check this claim.', source: { messageId: 'reply', startOffset: 0, endOffset: 13 } }]
@@ -51,6 +60,7 @@ test('annotation-only steering reaches the active turn through the route', async
         '@/lib/auth': { getCurrentUser: async () => ({ userId: 'owner' }) },
         '@/lib/db': { getPrismaClient: () => ({ codexSession: { findFirst: async () => ({ id: sessionId, status: 'running' }) } }) },
         '@/lib/server/codex-app-server': server,
+        '@/lib/server/codex-session-workspace': { getCodexSessionWorkspacePath: () => '/unused' },
         '@/lib/server/storage': { normalizeManagedAttachmentUrls: () => [] },
     })
     const send = (responseAnnotations) => route.POST(new Request('http://localhost/steer', {
@@ -146,7 +156,7 @@ for (const composerMode of ['default', 'plan']) {
             stream: {
                 onUserInputRequest: (request) => questions.push(request),
                 onUserInputResolved: (id) => resolved.push(id),
-                onAssistantDelta: (delta) => deltas.push(delta),
+                onAssistantDelta: (event) => deltas.push(event.delta),
                 onReasoningDelta: (event) => reasoningDeltas.push(event),
                 onEvent: (event) => {
                     if (event.kind === 'reasoning') reasoningEvents.push(event)
@@ -166,7 +176,7 @@ for (const composerMode of ['default', 'plan']) {
         assert.deepEqual(reasoningDeltas.map((event) => event.delta), ['Plan the scene'])
         assert.deepEqual(reasoningEvents.map((event) => event.content), ['Plan the complete scene'])
         assert.deepEqual(imageViewEvents.map((event) => event.workStatus), ['running', 'completed'])
-        assert.equal(result.assistantText, finalText + noticeText)
+        assert.deepEqual(result.assistantMessages.map((message) => message.content), [finalText, noticeText])
         assert.deepEqual(bridge.listCodexUserInputRequests(sessionId), [])
     })
 }
@@ -325,7 +335,7 @@ test('a failed turn persists partial assistant output and tool events after pend
             isCodexRunInterruptedError: () => false,
             runNovelCodexTurn: async ({ stream }) => {
                 stream.onReasoningDelta({ id: 'reasoning', delta: 'First thought', createdAt: now.toISOString() })
-                stream.onAssistantDelta('Partial answer')
+                stream.onAssistantDelta({ id: 'partial-answer', delta: 'Partial answer', createdAt: now.toISOString() })
                 stream.onEvent({ id: 'tool', kind: 'tool', title: 'Read manuscript', content: 'Tool output', workStatus: 'completed', toolInput: '{"sceneId":"scene"}', createdAt: now.toISOString() })
                 stream.onReasoningDelta({ id: 'reasoning', delta: ' continues', createdAt: now.toISOString() })
                 stream.onEvent({ id: 'reasoning', kind: 'reasoning', title: '', content: 'Finalized thought', workStatus: 'completed', createdAt: now.toISOString() })

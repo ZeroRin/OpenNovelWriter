@@ -1,6 +1,7 @@
 // Synced from CherryStudio UI icon routing.
 
 const MODEL_ICON_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  [/gpt-6-astra/i, 'gpt-6-astra'],
   // GPT 5.6 series (most specific first; APIs use both `5.6` and `5-6`)
   [/gpt-5[.-]6-luna/i, 'gpt-5-6-luna'],
   [/gpt-5[.-]6-sol/i, 'gpt-5-6-sol'],
@@ -294,6 +295,7 @@ const PROVIDER_ID_ALIASES: Record<string, string> = {
   dashscope: 'bailian',
   zai: 'z-ai',
   'minimax-global': 'minimax',
+  'moonshot-global': 'moonshot',
   cherryai: 'cherryin'
 }
 
@@ -363,6 +365,7 @@ const MODEL_ICON_KEYS = new Set<string>([
   "gpt-5-mini",
   "gpt-5-nano",
   "gpt-5-pro",
+  "gpt-6-astra",
   "gpt-audio",
   "gpt-audio-1-5",
   "gpt-audio-mini",
@@ -480,6 +483,7 @@ const PROVIDER_ICON_KEYS = new Set<string>([
   "nvidia",
   "ocoolai",
   "ollama",
+  "omlx",
   "openai",
   "opencode",
   "openrouter",
@@ -502,6 +506,7 @@ const PROVIDER_ICON_KEYS = new Set<string>([
   "tencent-cloud-ti",
   "tng",
   "together",
+  "tokendance",
   "upstage",
   "vercel",
   "vertexai",

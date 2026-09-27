@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo } from 'react'
 import { SceneContinuationPanel } from '@/components/editor/scene-continuation-panel'
 import { useSceneContinuationContext } from '@/components/editor/scene-continuation-context'
 import { plainTextToTiptapHtml } from '@/lib/plain-text-to-tiptap-html'
-import { subscribeContinuationPanelRemoved } from '@/lib/continuation-panel-events'
 
 export function createSceneContinuationPanelId() {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto && typeof crypto.randomUUID === 'function') {
@@ -19,8 +18,6 @@ export function createSceneContinuationPanelId() {
 function SceneContinuationNodeView({ editor, node, getPos, updateAttributes }: ReactNodeViewProps) {
     const ctx = useSceneContinuationContext()
     const panelId = useMemo(() => String(node.attrs.panelId ?? '').trim(), [node.attrs.panelId])
-    const skillId = useMemo(() => String(node.attrs.skillId ?? '').trim(), [node.attrs.skillId])
-    const codexSessionId = useMemo(() => String(node.attrs.codexSessionId ?? '').trim(), [node.attrs.codexSessionId])
 
     useEffect(() => {
         if (panelId) return
@@ -49,20 +46,6 @@ function SceneContinuationNodeView({ editor, node, getPos, updateAttributes }: R
         editor.commands.deleteRange({ from: pos, to: pos + node.nodeSize })
     }, [editor.commands, getPos, node.nodeSize])
 
-    // When the paired Codex session is deleted elsewhere, the server already stripped this panel
-    // from the stored scene HTML — drop the live node before the next autosave re-persists it.
-    useEffect(() => {
-        if (!panelId) return
-        return subscribeContinuationPanelRemoved((removedPanelId) => {
-            if (removedPanelId === panelId) removeNode()
-        })
-    }, [panelId, removeNode])
-
-    const handleSetCodexSessionId = useCallback(
-        (nextSessionId: string) => updateAttributes({ codexSessionId: nextSessionId }),
-        [updateAttributes]
-    )
-
     return (
         <NodeViewWrapper className="not-prose my-4 font-sans text-base leading-normal" contentEditable={false} data-panel-id={panelId || undefined}>
             <SceneContinuationPanel
@@ -71,8 +54,6 @@ function SceneContinuationNodeView({ editor, node, getPos, updateAttributes }: R
                 chapterTitle={ctx.chapterTitle}
                 sceneId={ctx.sceneId}
                 panelId={panelId || undefined}
-                skillId={skillId || undefined}
-                codexSessionId={codexSessionId || undefined}
                 scenes={ctx.scenes}
                 localEdits={ctx.localEdits}
                 ensureComponentPrompts={ctx.ensureComponentPrompts}
@@ -81,7 +62,6 @@ function SceneContinuationNodeView({ editor, node, getPos, updateAttributes }: R
                 termEntries={ctx.termEntries}
                 onApplyContinuation={handleApplyContinuation}
                 onOpenRightSidebar={ctx.onOpenRightSidebar}
-                onSetCodexSessionId={handleSetCodexSessionId}
                 onClose={removeNode}
             />
         </NodeViewWrapper>
@@ -111,24 +91,7 @@ export const SceneContinuationNode = Node.create({
                     return { 'data-panel-id': value }
                 },
             },
-            skillId: {
-                default: '',
-                parseHTML: (element) => element.getAttribute('data-skill-id') ?? '',
-                renderHTML: (attributes) => {
-                    const value = String(attributes.skillId ?? '').trim()
-                    if (!value) return {}
-                    return { 'data-skill-id': value }
-                },
-            },
-            codexSessionId: {
-                default: '',
-                parseHTML: (element) => element.getAttribute('data-codex-session-id') ?? '',
-                renderHTML: (attributes) => {
-                    const value = String(attributes.codexSessionId ?? '').trim()
-                    if (!value) return {}
-                    return { 'data-codex-session-id': value }
-                },
-            },
+
         }
     },
 

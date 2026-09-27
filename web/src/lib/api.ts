@@ -1,3 +1,5 @@
+import type { ChatPromptSnapshot } from '@/lib/ai-chat-messages'
+import type { PromptTemplateChatState } from '@/lib/prompt-template-render'
 import type { CodexWorkMetadata } from '@/lib/codex-work-events'
 import type { CodexUserInputRequest, CodexUserInputResponse } from '@/lib/codex-user-input'
 import { useAuthStore } from './store'
@@ -15,6 +17,7 @@ import type { CodexResponseAnnotation } from './codex-response-annotations'
 import type { PetSummary } from './pets'
 import { parseContentDispositionFilename } from '@/lib/export/filename'
 import type { NovelExportRequest } from '@/lib/export/types'
+import { dispatchNovelOutlineDataChanged } from '@/lib/novel-outline-events'
 
 const API_BASE = '/api'
 
@@ -583,8 +586,11 @@ export const outlineApi = {
 
     get: (id: string) => fetchApi<Outline>(`/outlines/${id}`),
 
-    update: (id: string, data: Partial<Pick<Outline, 'content'>>) =>
-        fetchApi<Outline>(`/outlines/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    update: async (id: string, data: Partial<Pick<Outline, 'content'>>) => {
+        const outline = await fetchApi<Outline>(`/outlines/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+        dispatchNovelOutlineDataChanged({ novelId: outline.novelId })
+        return outline
+    },
 
     delete: (id: string) =>
         fetchApi<{ message: string }>(`/outlines/${id}`, { method: 'DELETE' }),
@@ -661,6 +667,7 @@ export interface EditorChatMessage {
     content: string
     sentContent: string | null
     fullRenderedContent: string | null
+    renderState: PromptTemplateChatState | null
     promptTokens: number | null
     completionTokens: number | null
     totalTokens: number | null
@@ -676,7 +683,7 @@ export interface EditorChatConversation {
     promptId: string | null
     selectedGroupId: string | null
     draftContent: string
-    promptSnapshot: Prompt | null
+    promptSnapshot: ChatPromptSnapshot | null
     inputState: unknown
     novelId: string
     ownerId: string
@@ -691,7 +698,6 @@ export interface Skill {
     description: string | null
     category: SkillCategory | string
     enabled: boolean
-    prompt: string | null
     content: string
     sourcePresetId: string | null
     sourcePresetRevision: number | null
@@ -922,7 +928,7 @@ export const skillApi = {
             method: 'POST',
         }),
 
-    update: (id: string, data: { content: string; category: SkillCategory; prompt: string | null }) =>
+    update: (id: string, data: { content: string; category: SkillCategory }) =>
         fetchApi<{ skill: Skill }>(`/skills/${encodeURIComponent(id)}`, {
             method: 'PUT',
             body: JSON.stringify(data),
@@ -1349,7 +1355,7 @@ export const editorChatApi = {
             promptId?: string | null
             selectedGroupId?: string | null
             draftContent?: string
-            promptSnapshot?: Prompt | null
+            promptSnapshot?: ChatPromptSnapshot | null
             inputState?: unknown
         }
     ) =>
@@ -1366,7 +1372,7 @@ export const editorChatApi = {
             promptId: string | null
             selectedGroupId: string | null
             draftContent: string
-            promptSnapshot: Prompt | null
+            promptSnapshot: ChatPromptSnapshot | null
             inputState: unknown
         }>
     ) =>
@@ -1391,6 +1397,7 @@ export const editorChatApi = {
             content: string
             sentContent?: string | null
             fullRenderedContent?: string | null
+            renderState?: PromptTemplateChatState | null
             promptTokens?: number | null
             completionTokens?: number | null
             totalTokens?: number | null
@@ -1431,15 +1438,6 @@ export type CodexSessionCleanupResult = {
     deletedSessionIds: string[]
 }
 
-/**
- * A chat skill's bound prompt, pre-assembled on the client (filled inputs + the auto-injected
- * overview and referenced terms). The message route materializes these blocks into the session's
- * `artifacts/` so Codex can run_llm against the file or read it for context.
- */
-export interface CodexPromptArtifact {
-    skillId: string
-    renderedBlocks: Array<{ role: string; text: string }>
-}
 export type CodexSessionStatus = 'idle' | 'running' | 'error'
 export type CodexReviewLevel = 'user_review' | 'auto_review' | 'no_review' | 'full_access'
 export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
@@ -1500,7 +1498,7 @@ export type CodexRunEvent = CodexWorkMetadata & {
 }
 
 export type CodexSessionStreamEvent =
-    | { type: 'assistant_delta'; delta: string; id?: string; createdAt?: string }
+    | { type: 'assistant_delta'; delta: string; id: string; createdAt: string }
     | { type: 'reasoning_delta'; id: string; delta: string; createdAt: string }
     | { type: 'plan_delta'; id: string; delta: string; createdAt: string }
     | { type: 'event'; event: CodexRunEvent }
@@ -1534,6 +1532,7 @@ export type CodexApprovalRequest = {
 }
 
 export type CodexSession = {
+    continuationPanelId: string | null
     id: string
     category: CodexSessionCategory
     title: string | null
@@ -1593,12 +1592,12 @@ async function readSseStream(
             }
         } else if (eventName === 'assistant_delta' && data && typeof data === 'object') {
             const record = data as Record<string, unknown>
-            if (typeof record.delta === 'string') {
+            if (typeof record.id === 'string' && typeof record.delta === 'string' && typeof record.createdAt === 'string') {
                 onEvent({
                     type: 'assistant_delta',
                     delta: record.delta,
-                    id: typeof record.id === 'string' ? record.id : undefined,
-                    createdAt: typeof record.createdAt === 'string' ? record.createdAt : undefined,
+                    id: record.id,
+                    createdAt: record.createdAt,
                 })
             }
         } else if (eventName === 'plan_delta' && data && typeof data === 'object') {
@@ -1702,7 +1701,6 @@ export const codexSessionApi = {
             /** For `scene_continuation` sessions: the inline panel + its already-resolved prompt. */
             chapterId?: string
             panelId?: string
-            renderedBlocks?: Array<{ role: string; text: string }>
         }
     ) =>
         fetchApi<{ session: CodexSession; codexSessionCleanup: CodexSessionCleanupResult }>(`/novels/${encodeURIComponent(novelId)}/codex/sessions`, {
@@ -1731,7 +1729,7 @@ export const codexSessionApi = {
         }),
 
     delete: (id: string) =>
-        fetchApi<{ ok: true; removedPanelId: string | null }>(`/codex/sessions/${encodeURIComponent(id)}`, {
+        fetchApi<{ ok: true }>(`/codex/sessions/${encodeURIComponent(id)}`, {
             method: 'DELETE',
         }),
 
@@ -1816,7 +1814,6 @@ export const codexSessionApi = {
             messageId: string
             signal?: AbortSignal
             skillIds?: string[]
-            promptArtifact?: CodexPromptArtifact
             attachments?: string[]
             artifactFiles?: string[]
             responseAnnotations?: CodexResponseAnnotation[]
@@ -1837,7 +1834,6 @@ export const codexSessionApi = {
                 messageId: options.messageId,
                 content,
                 skillIds: options.skillIds,
-                promptArtifact: options.promptArtifact,
                 attachments: options.attachments,
                 artifactFiles: options.artifactFiles,
                 responseAnnotations: options.responseAnnotations,
@@ -1922,7 +1918,7 @@ export type ContinuationDraft = {
     sceneId: string
     chapterId: string
     codexSessionId: string | null
-    skillId: string | null
+    promptSnapshotJson: string | null
     content: string
     planning: string
     updatedBy: string
@@ -1943,7 +1939,7 @@ export const continuationDraftApi = {
             planning?: string
             updatedBy?: 'user' | 'model' | 'codex'
             codexSessionId?: string | null
-            skillId?: string | null
+            promptSnapshotJson?: string
         }
     ) =>
         fetchApi<{ draft: ContinuationDraft }>(`/continuation-drafts/${encodeURIComponent(panelId)}`, {
@@ -1959,6 +1955,12 @@ export const continuationDraftApi = {
 }
 
 export const codexApi = {
+    getSubagent: (sessionId: string, threadId: string, cursor?: string, signal?: AbortSignal) =>
+        fetchApi<import('@/lib/codex-subagents').CodexSubagentHistory>(
+            `/codex/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(threadId)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+            { signal }
+        ),
+
     listConnections: () => fetchApi<CodexConnectionSummary[]>('/codex/connections'),
 
     getConnection: (id: string) =>

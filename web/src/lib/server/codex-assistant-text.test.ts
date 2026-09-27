@@ -33,7 +33,7 @@ test('keeps extra streamed text when it already extends the completed item', () 
     })
 })
 
-test('appends a distinct completed message after a preamble', () => {
+test('appends missing text within the same native message', () => {
     assert.deepEqual(mergeCompletedAssistantText('looking it up.', 'Release date: 2026-09-17.'), {
         assistantText: 'looking it up.Release date: 2026-09-17.',
         delta: 'Release date: 2026-09-17.',

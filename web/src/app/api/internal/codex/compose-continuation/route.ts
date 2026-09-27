@@ -1,5 +1,7 @@
+import { ZodError } from 'zod'
 import { NextRequest, NextResponse } from 'next/server'
 import { isValidCodexInternalToken } from '@/lib/server/codex-internal-auth'
+import { parseContinuationInputs } from '@/lib/continuation-inputs'
 import { composeSceneContinuation } from '@/lib/server/continuation-compose'
 
 export const runtime = 'nodejs'
@@ -26,20 +28,6 @@ export async function POST(request: NextRequest) {
     const instruction = typeof body?.instruction === 'string' ? body.instruction : ''
     const afterParagraph = typeof body?.afterParagraph === 'string' ? body.afterParagraph : ''
 
-    const rawInputs = body?.inputs && typeof body.inputs === 'object' ? body.inputs : {}
-    const custom: Record<string, string> = {}
-    if (rawInputs.custom && typeof rawInputs.custom === 'object') {
-        for (const [key, value] of Object.entries(rawInputs.custom)) {
-            if (typeof value === 'string') custom[key] = value
-        }
-    }
-    const checkbox: Record<string, boolean> = {}
-    if (rawInputs.checkbox && typeof rawInputs.checkbox === 'object') {
-        for (const [key, value] of Object.entries(rawInputs.checkbox)) {
-            if (typeof value === 'boolean') checkbox[key] = value
-        }
-    }
-
     if (!ownerId) return NextResponse.json({ detail: 'ownerId is required.' }, { status: 400 })
     if (!promptName) return NextResponse.json({ detail: 'promptName is required.' }, { status: 400 })
     if (!novelId) return NextResponse.json({ detail: 'novelId is required.' }, { status: 400 })
@@ -52,7 +40,7 @@ export async function POST(request: NextRequest) {
             novelId,
             sceneId,
             instruction,
-            inputs: { custom, checkbox },
+            inputs: parseContinuationInputs(body?.inputs),
             afterParagraph,
         })
         if (!result.ok) {
@@ -64,13 +52,12 @@ export async function POST(request: NextRequest) {
             promptName: result.result.promptName,
             groups: result.result.groups,
             missingInputs: result.result.missingInputs,
-            unsupportedRequiredContentSelection: result.result.unsupportedRequiredContentSelection,
         })
     } catch (error) {
         console.error('Codex compose-continuation internal call failed:', error)
         return NextResponse.json(
             { detail: error instanceof Error ? error.message : 'Failed to compose continuation prompt.' },
-            { status: 500 }
+            { status: error instanceof ZodError ? 400 : 500 }
         )
     }
 }

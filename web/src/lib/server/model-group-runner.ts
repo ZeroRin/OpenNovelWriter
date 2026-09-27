@@ -34,6 +34,7 @@ export class ModelGroupRunnerError extends Error {
 export type RunModelMessage = ModelMessage & { images?: string[] }
 
 type RunModelInput = {
+    sessionId?: string
     stream?: boolean
     system?: string
     temperature?: number
@@ -255,6 +256,7 @@ export async function runModelGroupWithFallbackOnServer(options: {
                 apiKey,
                 baseUrl: assignment.connection.baseUrl,
                 modelId: assignment.modelId,
+                sessionId: options.input.sessionId,
             })
             const stream = options.input.stream === true
             const requestPayload = {

@@ -7,7 +7,7 @@ export type ContinuationDraftDto = {
     sceneId: string
     chapterId: string
     codexSessionId: string | null
-    skillId: string | null
+    promptSnapshotJson: string | null
     content: string
     planning: string
     updatedBy: string
@@ -20,7 +20,7 @@ type ContinuationDraftRecord = {
     sceneId: string
     chapterId: string
     codexSessionId: string | null
-    skillId: string | null
+    promptSnapshotJson: string | null
     content: string
     planning: string
     updatedBy: string
@@ -34,7 +34,7 @@ export function serializeContinuationDraft(record: ContinuationDraftRecord): Con
         sceneId: record.sceneId,
         chapterId: record.chapterId,
         codexSessionId: record.codexSessionId,
-        skillId: record.skillId,
+        promptSnapshotJson: record.promptSnapshotJson,
         content: record.content,
         planning: record.planning,
         updatedBy: record.updatedBy,
@@ -78,30 +78,4 @@ export async function cascadeDeleteContinuationDraftsForScenes(ownerId: string, 
     }
     await prisma.sceneContinuationDraft.deleteMany({ where: { sceneId: { in: sceneIds } } })
     return deletedSessionIds
-}
-
-/**
- * Remove the `<onw-scene-continuation data-panel-id="X">` marker from a scene's stored HTML.
- * Used when a session is deleted server-side so its panel disappears from the manuscript even
- * when the editor is not currently open (the open-editor case is handled client-side via event).
- * Returns true when the scene HTML changed.
- */
-export async function stripContinuationPanelMarker(sceneId: string, panelId: string) {
-    const scene = await prisma.scene.findUnique({ where: { id: sceneId }, select: { id: true, content: true } })
-    if (!scene) return false
-    const next = removePanelMarkerFromHtml(scene.content || '', panelId)
-    if (next === scene.content) return false
-    await prisma.scene.update({ where: { id: sceneId }, data: { content: next } })
-    return true
-}
-
-function removePanelMarkerFromHtml(html: string, panelId: string) {
-    if (!html || !panelId) return html
-    const escaped = panelId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    // Match the atom node element with the matching data-panel-id, paired or self-closing.
-    const pattern = new RegExp(
-        `<onw-scene-continuation\\b[^>]*\\bdata-panel-id=["']${escaped}["'][^>]*>(?:</onw-scene-continuation>)?`,
-        'gi'
-    )
-    return html.replace(pattern, '')
 }

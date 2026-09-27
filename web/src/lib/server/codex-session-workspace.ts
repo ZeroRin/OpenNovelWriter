@@ -26,7 +26,7 @@ export async function ensureCodexSessionWorkspace(input: {
     const novelContextPath = path.join(sessionPath, NOVEL_CONTEXT_DIR_NAME)
     const novelWorkspacePath = await ensureNovelWorkspace(input.ownerId, input.novelId)
 
-    await fs.mkdir(path.join(sessionPath, 'artifacts', 'skill-imports'), { recursive: true })
+    await fs.mkdir(path.join(sessionPath, 'artifacts'), { recursive: true })
     await fs.rm(novelContextPath, { recursive: true, force: true })
     await fs.mkdir(novelContextPath, { recursive: true })
 
@@ -79,25 +79,21 @@ async function syncMarkdownTree(sourceRoot: string, destinationRoot: string, man
 async function writeSessionAgentsFile(sessionPath: string, ownerId: string) {
     const userAgentContent = await readEnabledUserAgentContent(ownerId)
     const parts = [
-        '# OpenNovelWriter Codex Session',
+        '# OpenNovelWriter Codex 会话',
         '',
-        'This workspace contains read-only novel context and writable artifacts.',
-        '',
-        '- `novel/` contains Markdown symlinks: `outline.md` is the story outline and chapter index; `chapters/<chapter_id>.md` contains chapter text; `story-state/` projects Moments, entities, and currently credible facts.',
-        '- `novel/terms/<file>.md` uses term titles with numeric suffixes for duplicate titles. `novel/snippet.md` indexes author notes and reference fragments in `novel/snippets/<snippet_id>.md`.',
-        '- `novel/materials/<material_id>.md` contains an imported reference document, potentially a whole novel. Open it only when the user explicitly references that material by id; otherwise do not list, search, or read `novel/materials/`.',
-        '- For term, snippet, and material references, read the exact supplied file in full before responding. When passing referenced context to `run_llm`, include the relevant details in its conversation file.',
-        '- Use `artifacts/` for tool inputs and generated outputs, such as external-model conversation files and images.',
-        '- An image reference `[label](image:<manifest-path>#<optional-item-id>)` points to a manifest under `artifacts/`; read it and use the selected item file.',
-        '- To save a `run_llm` reply, use `source: { mdPath, index }` where supported instead of retyping. `index` selects an assistant turn (default `-1`, latest); edit the artifact first if the reply needs changes.',
-        '- A `[位置](continuation:chapterId:sceneId:panelId)` reference targets a continuation draft: use `set_continuation_draft` with that `panelId`, not `edit_scene_content`. Before revising, read `get_continuation_draft` to preserve author edits. The author decides when to insert the draft into the manuscript.',
-        '- User skills invoked with `/skill-name` are injected into the turn as `$skill` instructions. Follow them even if absent from `skills/list`; do not search the local catalog for an injected user skill.',
-        '- A skill may have one pre-assembled `artifacts/<prompt-name>-prompt.md` per associated prompt. Its `<!-- onw-skill-prompt ... -->` metadata lists `prompt`, `groups` (first is default), and `scene`. Fill every `<<<NEEDS INPUT: ...>>>` for that scene, or remove it if inapplicable. Follow the injected skill to decide whether to call `run_llm` and how to use the reply; when calling, use the file\'s absolute path and a listed group, defaulting to the first unless the skill specifies otherwise.',
+        '- `novel/terms/<file>.md` 按词条标题命名，重名时加数字后缀；`novel/snippet.md` 是片段索引，正文在 `novel/snippets/<snippet_id>.md`。',
+        '- `novel/materials/<material_id>.md` 是导入的参考资料，可能包含整本小说。仅在用户明确引用该资料 ID 时读取，否则不要列举、搜索或读取 `novel/materials/`。',
+        '- 用户引用词条、片段或参考资料时，回复前先完整读取指定文件；交给 `run_llm` 使用时，将相关内容写入其会话文件。',
+        '- 工具输入和生成结果放在 `artifacts/`。图片引用 `[标签](image:<manifest-path>#<optional-item-id>)` 指向其中的清单文件，读取清单后使用指定图片文件。',
+        '- 保存 `run_llm` 回复时，支持 `source` 的工具应直接使用 `source: { mdPath, index }`；`index` 选择 assistant 回复，默认 `-1` 表示最新一条。需要修改回复时先编辑该文件。',
+        '- 续写面板附件包含已组装的写作会话，以及记录输入、缺失项和绑定模型组的 JSON 快照。写作会话已含提示词上下文；Codex 聊天请求与写作会话分开。',
+        '- `[位置](continuation:chapterId:sceneId:panelId)` 指向续写草稿。修改前用 `get_continuation_draft` 导出最新草稿，文件含一个 `## assistant` 段；编辑后用 `set_continuation_draft` 的 `source: { mdPath }` 回写面板，由作者决定何时插入正文。',
+        '- 通过 `/skill-name` 调用的用户 Skill 会以 `$skill` 指令注入当前轮次，直接遵循即可；即使未出现在 `skills/list` 中，也不要再查找本地目录。',
     ]
 
     const normalizedUserAgent = userAgentContent.trim()
     if (normalizedUserAgent) {
-        parts.push('', '## User Agent Instructions', '', normalizedUserAgent)
+        parts.push('', '## 用户 Agent 指令', '', normalizedUserAgent)
     }
 
     await writeReadonlyProjectionFile(path.join(sessionPath, AGENTS_FILE_NAME), `${parts.join('\n')}\n`)

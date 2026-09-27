@@ -1,5 +1,7 @@
 'use client'
 
+import { flushContinuationPanel } from '@/lib/continuation-panel-sync'
+
 import { useCodexWorkDetailsStore } from '@/components/editor/codex-work-details-store'
 
 import { create, type StoreApi } from 'zustand'
@@ -22,7 +24,6 @@ import {
     type CodexSessionCleanupResult,
     type CodexComposerMode,
     type CodexContextWindow,
-    type CodexPromptArtifact,
     type CodexDraftArtifact,
     type CodexRateLimits,
 } from '@/lib/api'
@@ -36,7 +37,6 @@ import {
 import type { PendingImageAttachment } from '@/components/image/use-image-attachments'
 import { dispatchNovelRefreshRequested } from '@/lib/novel-refresh-events'
 import { emitSceneEditsChanged } from '@/components/editor/scene-edit-events'
-import { emitContinuationPanelRemoved } from '@/lib/continuation-panel-events'
 import { mergeRefreshedSession, mergeServerSession, mergeSessionSummary } from '@/components/editor/codex-session-merge'
 import {
     completionReadAtOnDraftChange,
@@ -143,17 +143,9 @@ type CodexStoreState = {
         novelId: string | null | undefined,
         input: { skillId: string; sceneId: string; draftContent: string; title?: string | null }
     ) => Promise<string | null>
-    createSceneContinuationSkillSession: (
+    createSceneContinuationSession: (
         novelId: string | null | undefined,
-        input: {
-            skillId: string
-            sceneId: string
-            chapterId: string
-            panelId: string
-            renderedBlocks?: Array<{ role: string; text: string }>
-            draftContent: string
-            title?: string | null
-        }
+        input: { panelId: string; title?: string | null }
     ) => Promise<string | null>
     selectSession: (novelId: string | null | undefined, sessionId: string) => void
     markSessionRead: (novelId: string | null | undefined, sessionId: string) => void
@@ -203,7 +195,6 @@ type CodexStoreState = {
         options?: {
             preserveComposer?: boolean
             skillIds?: string[]
-            promptArtifact?: CodexPromptArtifact
             attachments?: string[]
             artifactFiles?: string[]
             responseAnnotations?: CodexResponseAnnotation[]
@@ -423,6 +414,7 @@ function eventToMessage(event: CodexRunEvent): CodexSession['messages'][number] 
         kind: event.kind,
         workStatus: event.workStatus,
         toolInput: event.toolInput,
+        subagent: event.subagent,
         detailVersion: event.detailVersion,
         sceneEdit: event.sceneEdit,
         content: [event.title, event.content].filter(Boolean).join('\n\n'),
@@ -444,17 +436,13 @@ function upsertMessage(session: CodexSession, message: CodexSession['messages'][
     }
 }
 
-function appendAssistantDelta(session: CodexSession, event: { delta: string; id?: string; createdAt?: string }) {
-    const previous = session.messages[session.messages.length - 1]
-    const streamId = event.id || (previous?.role === 'assistant' && previous.id.startsWith('codex_assistant_stream_')
-        ? previous.id
-        : createId('codex_assistant_stream'))
-    const existing = session.messages.find((message) => message.id === streamId)
+function appendAssistantDelta(session: CodexSession, event: { delta: string; id: string; createdAt: string }) {
+    const existing = session.messages.find((message) => message.id === event.id)
     return upsertMessage(session, {
-        id: streamId,
+        id: event.id,
         role: 'assistant',
         content: `${existing?.content ?? ''}${event.delta}`,
-        createdAt: existing?.createdAt ?? event.createdAt ?? new Date().toISOString(),
+        createdAt: existing?.createdAt ?? event.createdAt,
     })
 }
 
@@ -961,21 +949,14 @@ export const useEditorCodexStore = create<CodexStoreState>()((set, get) => ({
             .catch((error) => console.error('Failed to send scene operation message:', error))
         return result.session.id
     },
-    createSceneContinuationSkillSession: async (novelId, input) => {
-        // Returns the session id as soon as it exists (the panel locks + switches to "open
-        // session" immediately); the message turn runs in the background and the panel picks up
-        // Codex's draft writes via its run-gated refresh.
+    createSceneContinuationSession: async (novelId, input) => {
         const novelKey = getNovelKey(novelId)
         if (novelKey === EDITOR_CODEX_FALLBACK_NOVEL_ID) return null
         const serviceTier = await getPreferredServiceTierForNewSession(novelKey)
 
         const result = await codexSessionApi.create(novelKey, {
             category: 'scene_continuation',
-            skillId: input.skillId,
-            sceneId: input.sceneId,
-            chapterId: input.chapterId,
             panelId: input.panelId,
-            renderedBlocks: input.renderedBlocks,
             title: input.title ?? null,
             titleManuallyEdited: Boolean(input.title),
             reviewLevel: getStickyReviewLevel(),
@@ -997,9 +978,6 @@ export const useEditorCodexStore = create<CodexStoreState>()((set, get) => ({
         })
         finishSessionCleanup(result.codexSessionCleanup)
 
-        void get()
-            .sendMessage(novelKey, result.session.id, input.draftContent, { skillIds: [input.skillId] })
-            .catch((error) => console.error('Failed to send scene continuation message:', error))
         return result.session.id
     },
     selectSession: (novelId, sessionId) => {
@@ -1353,10 +1331,7 @@ export const useEditorCodexStore = create<CodexStoreState>()((set, get) => ({
 
         try {
             if (novelKey !== EDITOR_CODEX_FALLBACK_NOVEL_ID) {
-                const result = await codexSessionApi.delete(sessionId)
-                // A scene-continuation session is paired with an inline panel; the server removed it
-                // from the stored scene HTML, so drop the live node too if that scene is open.
-                if (result.removedPanelId) emitContinuationPanelRemoved(result.removedPanelId)
+                await codexSessionApi.delete(sessionId)
             }
             deletedSessionIds.add(sessionId)
             set((state) => removeSessionFromState(state, novelKey, sessionId))
@@ -1440,6 +1415,7 @@ export const useEditorCodexStore = create<CodexStoreState>()((set, get) => ({
         }
         const originalSession = get().sessionsByNovel[novelKey]?.sessions.find((session) => session.id === sessionId)
         if (!originalSession) return
+        if (originalSession.continuationPanelId) await flushContinuationPanel(originalSession.continuationPanelId)
         const originalImages = get().imageAttachmentsBySession[sessionId] ?? []
         const controller = beginClientRun(sessionId)
         if (!controller) return
@@ -1508,7 +1484,6 @@ export const useEditorCodexStore = create<CodexStoreState>()((set, get) => ({
                 messageId,
                 signal: controller.signal,
                 skillIds: options?.skillIds,
-                promptArtifact: options?.promptArtifact,
                 attachments: options?.attachments,
                 artifactFiles: options?.artifactFiles,
                 responseAnnotations: options?.responseAnnotations,

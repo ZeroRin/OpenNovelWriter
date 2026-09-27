@@ -27,7 +27,7 @@ import {
 import {
     applyCodexUpstreamModelCapabilities,
     applyDeepSeekModelDefaults,
-    applyNativeCodexModelCapabilities,
+    isGptCodexModelId,
     createDefaultCodexProviderModel,
     getDefaultCodexAuthJson,
     getDefaultCodexConfig,
@@ -97,7 +97,7 @@ function detailToForm(detail: CodexConnectionDetail): FormState {
         apiKey: '',
         hasApiKey: connection.hasApiKey,
         defaultModelId: connection.defaultModelId || connection.models[0]?.id || '',
-        models: connection.models.map(applyNativeCodexModelCapabilities),
+        models: connection.models,
         rateLimits: detail.rateLimits,
     }
 }
@@ -523,10 +523,11 @@ function ModelEditor({ model, isDefault, onDefault, onChange, onRemove, t }: {
     onRemove: () => void
     t: ReturnType<typeof useTranslations>
 }) {
+    const native = isGptCodexModelId(model.id)
     return <div className="space-y-2 rounded-lg border p-3">
         <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1"><Label>{t('modelId')}</Label><Input value={model.id} onChange={(event) => onChange({ id: event.target.value })} /></div><div className="space-y-1"><Label>{t('modelDisplayName')}</Label><Input value={model.displayName} onChange={(event) => onChange({ displayName: event.target.value })} /></div></div>
-        <div className="grid gap-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,0.55fr)_minmax(0,1.25fr)]"><div className="min-w-0 space-y-1"><Label className="whitespace-nowrap text-sm">{t('contextWindow')}</Label><Input type="number" min={1} value={model.contextWindow} onChange={(event) => onChange({ contextWindow: Number(event.target.value) })} /></div><div className="min-w-0 space-y-1"><Label className="whitespace-nowrap text-sm">{t('defaultEffort')}</Label><Select value={model.defaultReasoningEffort} onValueChange={(value: CodexReasoningEffort) => onChange({ defaultReasoningEffort: value, supportedReasoningEfforts: model.supportedReasoningEfforts.includes(value) ? model.supportedReasoningEfforts : [...model.supportedReasoningEfforts, value] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}</SelectContent></Select></div><div className="min-w-0 space-y-1"><Label className="whitespace-nowrap text-sm">{t('supportedEfforts')}</Label><Input className="min-w-0" value={model.supportedReasoningEfforts.join(', ')} onChange={(event) => onChange({ supportedReasoningEfforts: event.target.value.split(',').map((item) => item.trim()).filter((item): item is CodexReasoningEffort => EFFORTS.includes(item as CodexReasoningEffort)) })} /></div></div>
-        <div className="flex flex-wrap items-center gap-5"><label className="flex items-center gap-2 text-sm"><Switch checked={isDefault} onCheckedChange={(checked) => checked && onDefault()} />{t('defaultModel')}</label><label className="flex items-center gap-2 text-sm"><Switch checked={model.supportsParallelToolCalls} onCheckedChange={(checked) => onChange({ supportsParallelToolCalls: checked })} />{t('parallelTools')}</label><label className="flex items-center gap-2 text-sm"><Switch checked={model.inputModalities.includes('image')} onCheckedChange={(checked) => onChange({ inputModalities: checked ? ['text', 'image'] : ['text'] })} />{t('imageInput')}</label><Button type="button" variant="ghost" className="ml-auto text-destructive" onClick={onRemove}><Trash2 className="h-4 w-4" />{t('removeModel')}</Button></div>
+        {!native && <div className="grid gap-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,0.55fr)_minmax(0,1.25fr)]"><div className="min-w-0 space-y-1"><Label className="whitespace-nowrap text-sm">{t('contextWindow')}</Label><Input type="number" min={1} value={model.contextWindow} onChange={(event) => onChange({ contextWindow: Number(event.target.value) })} /></div><div className="min-w-0 space-y-1"><Label className="whitespace-nowrap text-sm">{t('defaultEffort')}</Label><Select value={model.defaultReasoningEffort} onValueChange={(value: CodexReasoningEffort) => onChange({ defaultReasoningEffort: value, supportedReasoningEfforts: model.supportedReasoningEfforts.includes(value) ? model.supportedReasoningEfforts : [...model.supportedReasoningEfforts, value] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}</SelectContent></Select></div><div className="min-w-0 space-y-1"><Label className="whitespace-nowrap text-sm">{t('supportedEfforts')}</Label><Input className="min-w-0" value={model.supportedReasoningEfforts.join(', ')} onChange={(event) => onChange({ supportedReasoningEfforts: event.target.value.split(',').map((item) => item.trim()).filter((item): item is CodexReasoningEffort => EFFORTS.includes(item as CodexReasoningEffort)) })} /></div></div>}
+        <div className="flex flex-wrap items-center gap-5"><label className="flex items-center gap-2 text-sm"><Switch checked={isDefault} onCheckedChange={(checked) => checked && onDefault()} />{t('defaultModel')}</label>{!native && <><label className="flex items-center gap-2 text-sm"><Switch checked={model.supportsParallelToolCalls} onCheckedChange={(checked) => onChange({ supportsParallelToolCalls: checked })} />{t('parallelTools')}</label><label className="flex items-center gap-2 text-sm"><Switch checked={model.inputModalities.includes('image')} onCheckedChange={(checked) => onChange({ inputModalities: checked ? ['text', 'image'] : ['text'] })} />{t('imageInput')}</label></>}<Button type="button" variant="ghost" className="ml-auto text-destructive" onClick={onRemove}><Trash2 className="h-4 w-4" />{t('removeModel')}</Button></div>
     </div>
 }
 

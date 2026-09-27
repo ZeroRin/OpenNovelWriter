@@ -17,32 +17,30 @@ const model: CodexProviderModel = {
     inputModalities: ['text', 'image'],
 }
 
-test('Astra uses its native instructions, Code Mode, and async questions for custom connections', async () => {
+test('GPT models inherit the complete native catalog, including future models and capabilities', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'opennovelwriter-catalog-'))
     try {
-        const astraInstructions = { instructions_template: 'Native Astra instructions' }
-        await fs.writeFile(path.join(directory, 'models_cache.json'), JSON.stringify({ models: [
-            { slug: 'gpt-5.6-sol', base_instructions: 'Sol instructions', model_messages: { instructions_template: 'Sol template' } },
-            { slug: 'gpt-6-astra', base_instructions: 'Astra instructions', model_messages: astraInstructions, tool_mode: 'code_mode_only', use_responses_lite: true },
-        ] }))
+        const native = {
+            slug: 'gpt-future', display_name: 'Future GPT', visibility: 'list',
+            context_window: 1_234_567, max_context_window: 2_000_000,
+            supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }],
+            default_reasoning_level: 'low', input_modalities: ['text', 'image'],
+            base_instructions: 'Native instructions',
+            model_messages: { instructions_template: 'Native template' },
+            tool_mode: 'future_mode', use_responses_lite: true,
+            experimental_supported_tools: ['new_native_tool'],
+            future_capability: { enabled: true },
+            service_tiers: [{ id: 'native-fast', name: 'Native Fast' }],
+        }
+        await fs.writeFile(path.join(directory, 'models_cache.json'), JSON.stringify({ models: [native] }))
+        const ids = ['gpt-future', 'openai/gpt-future', 'gpt-future-2026-09-03']
         for (const upstreamFormat of ['responses', 'chat-completions', 'anthropic-messages'] as const) {
             await writeCodexModelCatalog({
                 codexHome: directory, upstreamFormat,
-                models: ['gpt-6-astra', 'openai/gpt-6-astra', 'gpt-5.6-sol'].map(createDefaultCodexProviderModel),
+                models: ids.map((id) => ({ ...createDefaultCodexProviderModel(id), contextWindow: 100, defaultReasoningEffort: 'high' })),
             })
             const catalog = JSON.parse(await fs.readFile(path.join(directory, CODEX_MODEL_CATALOG_FILE), 'utf8'))
-            for (const entry of catalog.models.slice(0, 2)) {
-                assert.equal(entry.tool_mode, 'code_mode_only')
-                assert.equal(entry.use_responses_lite, false)
-                assert.equal(entry.shell_type, 'unified_exec')
-                assert.equal(entry.apply_patch_tool_type, 'freeform')
-                assert.equal(entry.base_instructions, 'Astra instructions')
-                assert.deepEqual(entry.model_messages, astraInstructions)
-                assert.deepEqual(entry.experimental_supported_tools, ['send_user_message_async', 'clock'])
-            }
-            assert.equal(catalog.models[1].slug, 'openai/gpt-6-astra')
-            assert.equal(catalog.models[2].tool_mode, undefined)
-            assert.notEqual(catalog.models[2].base_instructions, 'Astra instructions')
+            assert.deepEqual(catalog.models, ids.map((slug) => ({ ...native, slug })))
         }
     } finally {
         await fs.rm(directory, { recursive: true, force: true })
@@ -70,7 +68,7 @@ test('uses the official DeepSeek tool surface only on the official native Respon
 
         assert.equal(entry.apply_patch_tool_type, 'freeform')
         assert.equal(entry.use_responses_lite, false)
-        assert.equal(entry.web_search_tool_type, 'text')
+        assert.equal(entry.web_search_tool_type, undefined)
         assert.equal(entry.supports_search_tool, true)
         assert.equal(entry.minimal_client_version, '0.144.0')
         assert.equal(entry.supports_reasoning_summaries, true)

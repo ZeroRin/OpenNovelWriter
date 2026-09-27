@@ -21,7 +21,6 @@ export type SkillOnwMetadata = {
     schema: typeof ONW_SKILL_SCHEMA
     version: typeof ONW_SKILL_VERSION
     category: SkillCategory
-    prompt: string | null
 }
 
 type SkillPresetOrigin = { presetId: string; revision: number }
@@ -38,7 +37,6 @@ export type SkillRecord = {
      * re-syncs (the symlink alone can't distinguish "new skill" from "user-disabled").
      */
     enabled: boolean
-    prompt: string | null
     /**
      * The official preset this skill was cloned from. Cloned-from-preset skills are read-only unless
      * preset authoring is enabled; re-cloning the skill (via {@link cloneSkill}) clears this so the
@@ -145,7 +143,6 @@ async function readSkillRecord(
         description: parsed.description,
         category: metadata.category,
         enabled: !disabledIds.has(directoryName),
-        prompt: metadata.prompt,
         sourcePresetId: origin?.presetId ?? null,
         sourcePresetRevision: origin?.revision ?? null,
         content: normalizeDocumentContent(content),
@@ -173,7 +170,7 @@ export async function createSkill(input: {
     const content = createDefaultSkillMarkdown({ name: uniqueName })
     await Promise.all([
         fs.writeFile(path.join(directory, SKILL_FILE_NAME), content, 'utf8'),
-        writeSkillOnwMetadata(directory, { category: input.category, prompt: null }),
+        writeSkillOnwMetadata(directory, { category: input.category }),
     ])
 
     return readSkill(input.ownerId, directoryName)
@@ -289,7 +286,6 @@ export async function updateSkill(input: {
     skillId: string
     content: string
     category: SkillCategory
-    prompt: string | null
 }) {
     const directoryName = normalizeSkillId(input.skillId)
     const directory = getSkillDirectory(input.ownerId, directoryName)
@@ -308,7 +304,7 @@ export async function updateSkill(input: {
     // directory. This removes the autosave race where a debounced save targeted a just-renamed directory.
     await Promise.all([
         fs.writeFile(path.join(directory, SKILL_FILE_NAME), content, 'utf8'),
-        writeSkillOnwMetadata(directory, { category: input.category, prompt: input.prompt }),
+        writeSkillOnwMetadata(directory, { category: input.category }),
     ])
     return readSkill(input.ownerId, directoryName)
 }
@@ -409,7 +405,6 @@ export function toSkillDto(record: SkillRecord) {
         description: record.description,
         category: record.category,
         enabled: record.enabled,
-        prompt: record.prompt,
         content: record.content,
         sourcePresetId: record.sourcePresetId,
         sourcePresetRevision: record.sourcePresetRevision,
@@ -551,25 +546,22 @@ export function parseSkillOnwMetadataText(text: string): SkillOnwMetadata {
     }
     const category = normalizeSkillCategory(record.category)
     if (!category) throw new Error('Skill onw.json must include a valid `category`.')
-    const prompt = typeof record.prompt === 'string' && record.prompt.trim() ? record.prompt.trim() : null
 
     return {
         schema: ONW_SKILL_SCHEMA,
         version: ONW_SKILL_VERSION,
         category,
-        prompt,
     }
 }
 
 async function writeSkillOnwMetadata(
     directory: string,
-    metadata: Pick<SkillOnwMetadata, 'category' | 'prompt'>
+    metadata: Pick<SkillOnwMetadata, 'category'>
 ) {
     const value: SkillOnwMetadata = {
         schema: ONW_SKILL_SCHEMA,
         version: ONW_SKILL_VERSION,
         category: metadata.category,
-        prompt: metadata.prompt?.trim() || null,
     }
     await fs.writeFile(
         path.join(directory, ONW_METADATA_FILE_NAME),

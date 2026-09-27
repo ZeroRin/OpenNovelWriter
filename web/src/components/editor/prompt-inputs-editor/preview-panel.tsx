@@ -10,7 +10,7 @@ import {
     SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { PreviewInputCard } from '@/components/editor/prompt-inputs-editor/preview-input-card'
+import { PreviewInputList } from '@/components/editor/prompt-inputs-editor/preview-input-list'
 import { PreviewRenderedSection } from '@/components/editor/prompt-inputs-editor/preview-rendered-section'
 
 export function PreviewPanel({
@@ -90,11 +90,7 @@ export function PreviewPanel({
 	                            {t('advanced.preview.empty')}
 	                        </div>
 	                    ) : (
-	                        <div className="space-y-2">
-	                            {previewInputs.map((input) => (
-	                                <PreviewInputCard key={input.id} input={input} model={model} />
-	                            ))}
-	                        </div>
+	                        <PreviewInputList model={model} />
 	                    )}
                 </>
             )}

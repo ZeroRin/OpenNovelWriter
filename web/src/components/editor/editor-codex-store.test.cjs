@@ -115,6 +115,30 @@ test('Codex refresh and stream recovery', async (t) => {
         return stream.promise
     }
 
+    await t.test('native message IDs separate replies while interleaved work keeps each reply intact', async () => {
+        seed()
+        const run = store.getState().sendMessage(session.novelId, session.id, 'Check message boundaries')
+        const firstAt = session.updatedAt
+        const lastAt = '2026-09-06T00:02:00.000Z'
+        const delta = (id, text, createdAt = firstAt) => streamOptions.onEvent({ type: 'assistant_delta', id, delta: text, createdAt })
+        delta('first', 'Wait')
+        streamOptions.onEvent({ type: 'event', event: { id: 'tool', kind: 'command', title: 'sleep', content: '', workStatus: 'running', createdAt: firstAt } })
+        delta('first', 'ing.')
+        streamOptions.onEvent({ type: 'event', event: { id: 'tool', kind: 'command', title: 'sleep', content: '', workStatus: 'completed', createdAt: firstAt } })
+        delta('second', 'hel', lastAt)
+        delta('second', 'lo', lastAt)
+        delta('third', 'hello', lastAt)
+        const replies = current().messages.filter((message) => message.role === 'assistant')
+        assert.deepEqual(replies.map((message) => [message.id, message.content, message.createdAt]), [
+            ['first', 'Waiting.', firstAt], ['second', 'hello', lastAt], ['third', 'hello', lastAt],
+        ])
+        const saved = { ...current(), status: 'idle', updatedAt: lastAt }
+        streamOptions.onEvent({ type: 'done', session: saved })
+        stream.resolve()
+        await run
+        assert.deepEqual(current().messages.filter((message) => message.role === 'assistant'), replies)
+    })
+
     await t.test('tool start and completion update one row and preserve its arguments', async () => {
         seed()
         const run = store.getState().sendMessage(session.novelId, session.id, 'Check story state')

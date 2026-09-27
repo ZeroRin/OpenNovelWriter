@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Check, ChevronDown, ChevronRight, RotateCcw, Zap } from 'lucide-react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
@@ -19,7 +19,7 @@ import {
     type CodexReasoningEffort,
     type CodexServiceTier,
 } from '@/lib/api'
-import { CODEX_NATIVE_PROVIDER_MODELS, DEFAULT_CODEX_CHAT_SETTINGS, isGptCodexModelId } from '@/lib/codex-config'
+import { DEFAULT_CODEX_CHAT_SETTINGS, isGptCodexModelId } from '@/lib/codex-config'
 import { cn } from '@/lib/utils'
 import { useIsMobile } from '@/hooks/use-is-mobile'
 import styles from './codex-model-picker.module.css'
@@ -52,24 +52,8 @@ function createSliderParticles() {
 
 const SLIDER_PARTICLES = createSliderParticles()
 
-const BUILTIN_MODELS: CodexModelCatalogEntry[] = CODEX_NATIVE_PROVIDER_MODELS.map((model) => ({
-    id: model.id,
-    displayName: model.displayName,
-    description: '',
-    supportedReasoningEfforts: model.supportedReasoningEfforts,
-    defaultReasoningEffort: model.defaultReasoningEffort,
-    serviceTiers: [],
-}))
-
 function formatModelLabel(modelId: string, displayName?: string) {
-    const nativeModel = BUILTIN_MODELS.find((model) => model.id === modelId.trim().toLowerCase())
-    return nativeModel?.displayName || displayName?.trim() || modelId.trim()
-}
-
-function findPresetIndex(modelId: string, effort: CodexReasoningEffort) {
-    return PRESETS.findIndex(
-        (preset) => preset.modelId === modelId.trim().toLowerCase() && preset.effort === effort
-    )
+    return displayName?.trim() || modelId.trim()
 }
 
 function getModelEfforts(model: CodexModelCatalogEntry | undefined) {
@@ -118,7 +102,6 @@ type CodexModelPickerProps = {
     reasoningEffort: CodexReasoningEffort
     serviceTier: CodexServiceTier
     models: CodexModelCatalogEntry[]
-    includeBuiltinModels: boolean
     showServiceTier: boolean
     fastModeDescription: string
     modelSettingsDisabled?: boolean
@@ -135,7 +118,6 @@ export function CodexModelPicker({
     reasoningEffort,
     serviceTier,
     models,
-    includeBuiltinModels,
     showServiceTier,
     fastModeDescription,
     modelSettingsDisabled,
@@ -150,23 +132,14 @@ export function CodexModelPicker({
     const [maxBurst, setMaxBurst] = useState(0)
     const draggingRef = useRef(false)
 
-    const availableModels = useMemo(() => {
-        const catalog = new Map<string, CodexModelCatalogEntry>()
-        if (includeBuiltinModels) {
-            for (const model of BUILTIN_MODELS) catalog.set(model.id, model)
-        }
-        for (const model of models) {
-            const builtin = catalog.get(model.id.toLowerCase())
-            catalog.set(model.id.toLowerCase(), builtin ? { ...model, ...builtin, serviceTiers: model.serviceTiers } : model)
-        }
-        return [...catalog.values()]
-    }, [includeBuiltinModels, models])
+    const availableModels = models
     const selectedModel = availableModels.find((model) => model.id.toLowerCase() === modelId.trim().toLowerCase())
-    const useGptPicker = includeBuiltinModels && isGptCodexModelId(modelId)
-    const currentPresetIndex = findPresetIndex(modelId, reasoningEffort)
+    const useGptPicker = isGptCodexModelId(modelId)
+    const presets = PRESETS.filter((preset) => availableModels.some((model) => model.id === preset.modelId && model.supportedReasoningEfforts.includes(preset.effort)))
+    const currentPresetIndex = presets.findIndex((preset) => preset.modelId === modelId.trim().toLowerCase() && preset.effort === reasoningEffort)
     const defaultMode = explicitModelId !== modelId && currentPresetIndex >= 0
     const effortOptions = getModelEfforts(selectedModel)
-    const steps = defaultMode ? PRESETS : effortOptions.map((effort) => ({ modelId, effort }))
+    const steps = defaultMode ? presets : effortOptions.map((effort) => ({ modelId, effort }))
     const selectedIndex = defaultMode ? currentPresetIndex : effortOptions.indexOf(reasoningEffort)
     const previewIndex = dragIndex ?? Math.max(0, selectedIndex)
     const preview = steps[previewIndex]

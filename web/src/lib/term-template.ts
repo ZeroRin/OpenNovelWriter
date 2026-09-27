@@ -164,3 +164,7 @@ export function resolveTrackedTermIds(params: {
 
     return out
 }
+
+export function findRenderedTermIds(texts: string[], termValues: ReadonlyMap<string, string>) {
+    return [...termValues].filter(([, value]) => value.trim() && texts.some((text) => text.includes(value.trim()))).map(([id]) => id)
+}

@@ -2,6 +2,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { LanguageModel } from 'ai'
 import { isImageGenerationModel } from '@/lib/cherrystudio-model-config'
+import { getOpenCodeGoHeaders } from '@/lib/server/opencode-go'
 import {
     parseOpenAiModelList,
     requireProviderModels,
@@ -94,14 +95,16 @@ export function createLanguageModel(options: {
     apiKey: string
     baseUrl?: string | null
     modelId: string
+    sessionId?: string
 }): LanguageModel {
     const { providerType, apiKey, modelId } = options
     const baseURL = resolveBaseUrl(providerType, options.baseUrl)
 
     if (providerType === 'openai-chat') {
-        return createOpenAICompatible({ apiKey, baseURL, name: 'openaiChat' }).chatModel(
-            modelId
-        ) as unknown as LanguageModel
+        return createOpenAICompatible({
+            apiKey, baseURL, name: 'openaiChat',
+            headers: getOpenCodeGoHeaders(baseURL, options.sessionId),
+        }).chatModel(modelId) as unknown as LanguageModel
     }
 
     if (providerType === 'gemini') {

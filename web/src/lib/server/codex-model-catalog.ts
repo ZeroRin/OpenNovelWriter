@@ -1,10 +1,8 @@
-import fs from 'fs/promises'
-import os from 'os'
 import path from 'path'
 
 import {
     getCustomCodexServiceTiers,
-    isAstraCodexModelId,
+    isGptCodexModelId,
     type CodexProviderModel,
     type CodexUpstreamFormat,
 } from '@/lib/codex-config'
@@ -15,6 +13,7 @@ import {
     shouldUseOfficialDeepSeekCatalog,
 } from '@/lib/codex-deepseek'
 import { writeFileAtomicallyIfChanged } from '@/lib/server/atomic-file-write'
+import { findCodexNativeModel, readCodexNativeModels, resolveCodexProviderModels, type CodexNativeModel } from './codex-native-models'
 
 export const CODEX_MODEL_CATALOG_FILE = 'opennovelwriter-model-catalog.json'
 
@@ -40,13 +39,12 @@ export async function writeCodexModelCatalog(input: {
     baseUrl?: string | null
     models: CodexProviderModel[]
 }) {
-    const template = await loadCodexModelTemplate(input.codexHome)
-    const astraTemplate = input.models.some((model) => isAstraCodexModelId(model.id))
-        ? await loadCodexModelTemplate(input.codexHome, 'gpt-6-astra')
-        : template
+    const gptIds = input.models.filter((model) => isGptCodexModelId(model.id)).map((model) => model.id)
+    const nativeModels = gptIds.length > 0 ? await readCodexNativeModels(input.codexHome, gptIds) : []
+    const models = resolveCodexProviderModels(input.models, nativeModels)
     const catalog = {
-        models: input.models.map((model, index) =>
-            buildCatalogEntry(isAstraCodexModelId(model.id) ? astraTemplate : template, model, index, input.upstreamFormat, input.baseUrl)
+        models: models.map((model, index) =>
+            buildCatalogEntry(nativeModels, model, index, input.upstreamFormat, input.baseUrl)
         ),
     }
     const target = path.join(input.codexHome, CODEX_MODEL_CATALOG_FILE)
@@ -55,24 +53,27 @@ export async function writeCodexModelCatalog(input: {
 }
 
 function buildCatalogEntry(
-    template: JsonObject,
+    nativeModels: CodexNativeModel[],
     model: CodexProviderModel,
     index: number,
     upstreamFormat: CodexUpstreamFormat,
     baseUrl?: string | null
 ) {
+    if (isGptCodexModelId(model.id)) {
+        const native = findCodexNativeModel(nativeModels, model.id)
+        if (!native) throw new Error(`Codex model ${model.id} is unavailable.`)
+        return { ...structuredClone(native), slug: model.id }
+    }
     model = applyCodexUpstreamModelCapabilities(model, upstreamFormat, baseUrl)
     if (shouldUseOfficialDeepSeekCatalog(upstreamFormat, baseUrl, model.id)) {
         return applyCustomServiceTiers(buildOfficialDeepSeekCatalogEntry(model, index), upstreamFormat)
     }
 
-    const entry: JsonObject = structuredClone(template)
+    const entry: JsonObject = customModelTemplate()
     entry.slug = model.id
     entry.display_name = model.displayName
     entry.description = model.displayName
-    entry.base_instructions = isAstraCodexModelId(model.id)
-        ? template.base_instructions ?? CUSTOM_MODEL_BASE_INSTRUCTIONS
-        : CUSTOM_MODEL_BASE_INSTRUCTIONS
+    entry.base_instructions = CUSTOM_MODEL_BASE_INSTRUCTIONS
     entry.context_window = model.contextWindow
     entry.max_context_window = model.contextWindow
     entry.effective_context_window_percent = 95
@@ -99,14 +100,6 @@ function buildCatalogEntry(
     delete entry.web_search_tool_type
     if (isOfficialDeepSeekAnthropicProvider(upstreamFormat, baseUrl)) entry.web_search_tool_type = 'text'
 
-    if (isAstraCodexModelId(model.id)) {
-        entry.tool_mode = 'code_mode_only'
-        entry.shell_type = 'unified_exec'
-        entry.apply_patch_tool_type = 'freeform'
-        entry.experimental_supported_tools = ['send_user_message_async', 'clock']
-        return entry
-    }
-
     if (upstreamFormat === 'responses' || upstreamFormat === 'anthropic-messages') {
         delete entry.apply_patch_tool_type
         delete entry.model_messages
@@ -123,24 +116,7 @@ function applyCustomServiceTiers(entry: JsonObject, upstreamFormat: CodexUpstrea
     return entry
 }
 
-async function loadCodexModelTemplate(codexHome: string, modelId = 'gpt-5.6-sol'): Promise<JsonObject> {
-    const candidates = [
-        path.join(codexHome, 'models_cache.json'),
-        path.join(os.homedir(), '.codex', 'models_cache.json'),
-    ]
-    for (const candidate of candidates) {
-        try {
-            const parsed = JSON.parse(await fs.readFile(candidate, 'utf8')) as { models?: JsonObject[] }
-            const models = Array.isArray(parsed.models) ? parsed.models : []
-            const preferred =
-                models.find((model) => model.slug === modelId) ??
-                (modelId === 'gpt-5.6-sol' ? models.find((model) => typeof model.base_instructions === 'string') : undefined)
-            if (preferred) return preferred
-        } catch {
-            // Try the next source. Custom connections may not have a model cache yet.
-        }
-    }
-
+function customModelTemplate(): JsonObject {
     return {
         slug: 'opennovelwriter-template',
         display_name: 'OpenNovelWriter template',

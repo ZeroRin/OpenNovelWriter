@@ -3,7 +3,7 @@
 import type { InputsEditorModel } from '@/components/editor/prompt-inputs-editor/model'
 import type { ContentSelectionTarget, PromptContentSelectionInputDefinition } from '@/lib/prompt-inputs'
 import { PreviewInputCardFrame } from '@/components/editor/prompt-inputs-editor/preview-input-card-frame'
-import { selectionKey } from '@/components/editor/prompt-inputs-editor/utils'
+import { selectionKey } from '@/lib/prompt-inputs'
 import { PreviewContentSelectionMenu } from '@/components/editor/prompt-inputs-editor/preview-content-selection-menu'
 import type { PreviewContentSelectionController } from '@/components/editor/prompt-inputs-editor/preview-content-selection-shared'
 import { PreviewContentSelectionSelectedItems } from '@/components/editor/prompt-inputs-editor/preview-content-selection-selected-items'
@@ -114,6 +114,7 @@ export function PreviewContentSelectionInputCard({
             collapsible={input.collapsed}
             expandLabel={t('advanced.inputs.expand')}
             collapseLabel={t('advanced.inputs.collapse')}
+            disabled={model.disabled}
         >
             <div className="space-y-2">
                 <div className="flex flex-wrap items-start gap-2">

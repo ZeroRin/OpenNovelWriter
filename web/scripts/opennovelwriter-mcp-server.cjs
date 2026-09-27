@@ -30,6 +30,7 @@ const { applyHunk, diffRegions } = require('../src/lib/server/manuscript-edit.cj
 const { updateSceneContentWithStats } = require('../src/lib/server/manuscript-word-count.cjs')
 const { parseLlmConversation, buildLlmRequestPayload, getAssistantBlock } = require('../src/lib/server/llm-conversation.cjs')
 const { deactivateStoryEpisodesForScene } = require('../src/lib/server/story-state-lifecycle.cjs')
+const { CONTENT_SEARCH_KINDS, searchContent } = require('../src/lib/server/content-search.cjs')
 
 const prisma = new PrismaClient({
     adapter: createPrismaSqliteAdapter(process.env.DATABASE_URL, path.join(__dirname, '..')),
@@ -37,6 +38,7 @@ const prisma = new PrismaClient({
 const ownerId = process.env.OPENNOVELWRITER_OWNER_ID
 const internalBaseUrl = (process.env.OPENNOVELWRITER_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '')
 const internalToken = process.env.OPENNOVELWRITER_INTERNAL_TOKEN || ''
+const deepSeekSearchConnectionId = process.env.OPENNOVELWRITER_DEEPSEEK_SEARCH_CONNECTION_ID || ''
 const RUN_LLM_TIMEOUT_MS = 175_000
 const TERM_RELATION_DIRECTIONS = ['outgoing', 'incoming', 'bidirectional']
 const TERM_RELATION_OP_ACTIONS = ['set', 'delete']
@@ -47,9 +49,9 @@ const TERM_GALLERY_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 // the model output goes straight from the .md into a scene without Codex retyping it.
 const LLM_REPLY_SOURCE_SCHEMA = {
     type: 'object',
-    description: 'Pull this text from a `run_llm` conversation artifact instead of typing it. Use this to commit a model reply without retyping it. If the reply needs tweaks, edit the .md first, then reference it here.',
+    description: 'Read an assistant reply from a conversation Markdown artifact. Edit the file first if the reply needs changes, then reference it here without retyping it.',
     properties: {
-        mdPath: { type: 'string', description: 'Absolute path to the .md conversation file under this Codex session artifacts directory (the same file you passed to run_llm).' },
+        mdPath: { type: 'string', description: 'Absolute path to a .md file with an assistant section under this Codex session artifacts directory.' },
         index: { type: 'integer', description: 'Which `## assistant` reply to take, counting only assistant turns. Negative counts from the end. Defaults to -1 (the latest reply).' },
     },
     required: ['mdPath'],
@@ -68,6 +70,17 @@ const IMAGE_SOURCE_SCHEMA = {
 }
 
 const tools = [
+    ...(deepSeekSearchConnectionId ? [{
+        name: 'web_search',
+        description: 'Search the public web with DeepSeek and return a summary and source URLs. Use for current information and online research. Cite sources as [[1]](https://...), [[2]](https://...).',
+        annotations: { readOnlyHint: true, openWorldHint: true },
+        inputSchema: {
+            type: 'object',
+            properties: { query: { type: 'string', description: 'The web search query.' } },
+            required: ['query'],
+            additionalProperties: false,
+        },
+    }] : []),
     {
         name: 'update_novel_title',
         description: 'Update the title of an OpenNovelWriter novel.',
@@ -539,7 +552,7 @@ const tools = [
     {
         name: 'get_continuation_draft',
         description:
-            'Read the current editable text held by an inline scene-continuation panel (identified by its panelId). This is the shared draft the author sees in the panel and may have hand-edited; read it before revising so you build on the latest version. Returns the draft `content` (and any `planning`). Does NOT touch the manuscript — the author decides when to write the draft into the prose.',
+            'Export the latest scene-continuation panel draft to a Markdown file in its linked Codex session artifacts directory. Call before generating or revising, then read and edit the returned mdPath to preserve author edits. Each call refreshes that file from the panel. The file has one ## assistant section containing <Content> and optional <Planning> tags. Returns mdPath and isEmpty (whether the prose is blank), not the draft text. Submit the edited file with set_continuation_draft. Does not modify the manuscript.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -552,43 +565,30 @@ const tools = [
     {
         name: 'set_continuation_draft',
         description:
-            'Write the editable text of a scene-continuation panel (identified by its panelId). The panel grows downward to show this text; the author then chooses to write it into the prose, retry, or discard — this tool does NOT modify the manuscript. Provide exactly one of `text` (a literal string) or `source` (a reference to a run_llm reply, read server-side so you do not retype it) — prefer `source` to forward a reply verbatim. If the text wraps prose in `<Content>...</Content>` (optionally with a leading `<Planning>...</Planning>`), the panel splits them: only Content is written to the manuscript, Planning is shown collapsed. Untagged text is treated as plain prose. Use real newlines for paragraph breaks (a blank line between paragraphs), not literal "\\n".',
+            'Update a scene-continuation panel from an assistant section in a Markdown file. Pass source: { mdPath } using the file returned by get_continuation_draft after editing it; for an initially empty draft, you may use the continuation conversation file directly after run_llm. source.index defaults to the last assistant reply. Both <Content> prose and optional <Planning> notes are read from the file; untagged replies are plain prose. The author decides when to insert the draft into the manuscript.',
         inputSchema: {
             type: 'object',
             properties: {
                 panelId: { type: 'string', description: 'The continuation panel id (from the `[位置](continuation:chapterId:sceneId:panelId)` reference in the request).' },
-                text: { type: 'string', description: 'The continuation text as a literal string. Separate paragraphs with a blank line. Omit this when using `source`.' },
                 source: LLM_REPLY_SOURCE_SCHEMA,
-                planning: { type: 'string', description: 'Optional planning/notes shown above the draft. Omit to leave unchanged.' },
             },
-            required: ['panelId'],
+            required: ['panelId', 'source'],
             additionalProperties: false,
         },
     },
     {
-        name: 'describe_prompt',
+        name: 'export_prompt',
         description:
-            'Inspect a saved OpenNovelWriter prompt so you know what to pass to `compose_scene_continuation`. Use this only when a skill tells you to assemble a specific prompt — the active skill\'s instructions name the prompt to use; pass that exact name here. Returns the prompt\'s `inputs` grouped by type: `custom` (free text and/or a dropdown of option labels — give a final string value), `checkbox` (a boolean), and `content_selection` (you CANNOT fill these — they are left at their default). If `unsupportedRequiredContentSelection` is non-empty, the prompt has a required content-selection input that cannot be assembled this way; tell the author it is not supported yet and stop. Also returns the bound model `groups` (the first is the default for a later run_llm).',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                promptName: { type: 'string', description: 'The exact prompt name the active skill\'s instructions tell you to use. Prompt names are unique across the author\'s prompts.' },
-            },
-            required: ['promptName'],
-            additionalProperties: false,
-        },
-    },
-    {
-        name: 'export_prompt_library',
-        description:
-            'Export the current author\'s complete OpenNovelWriter prompt library plus the three built-in base prompt presets into a new directory under this Codex session\'s artifacts. Use only after reading the built-in edit-prompts skill. The manifest records prompt ids, updatedAt values, includes, reverse usages, user-skill bindings, defaults, and per-prompt JSON paths. Model bindings and revision history are intentionally excluded. This tool only writes artifacts; it does not change prompts.',
+            'Export OpenNovelWriter prompt definitions to a new directory under this Codex session\'s artifacts. For authoring changes, read the built-in edit-prompts skill first; read-only inspection for continuation does not require it. source defaults to library: omit name to export the author\'s entire library, or provide an exact prompt/component name to export it with all referenced components. Use source=builtin to export built-in preset packages, optionally selecting one by preset name. Names are matched ignoring case and surrounding whitespace; sources never fall back to one another. The manifest includes descriptions, file paths, and library dependency/usage information; library definitions preserve ids and updatedAt for editing. Model bindings and revision history are excluded. Returns paths, not prompt bodies; this tool does not change prompts.',
         inputSchema: {
             type: 'object',
             properties: {
                 directoryPath: {
                     type: 'string',
-                    description: 'Absolute path for a new directory under this Codex session artifacts directory, for example /.../artifacts/prompt-library. The directory must not already exist.',
+                    description: 'Absolute path for a new directory under this Codex session artifacts directory, for example /.../artifacts/prompt-export. The directory must not already exist.',
                 },
+                name: { type: 'string', minLength: 1, description: 'Exact user prompt/component name, or built-in preset name when source=builtin. Omit to export all entries from the selected source.' },
+                source: { type: 'string', enum: ['library', 'builtin'], default: 'library', description: 'library reads the author\'s saved prompts; builtin reads the application\'s current preset assets.' },
             },
             required: ['directoryPath'],
             additionalProperties: false,
@@ -597,7 +597,7 @@ const tools = [
     {
         name: 'apply_prompt_changes',
         description:
-            'Validate or atomically apply an OpenNovelWriter prompt change-set JSON written under this Codex session artifacts directory. Use only after reading the built-in edit-prompts skill. Always call mode=validate first and show the resulting plan to the author; call mode=apply only after approval. Creates start without model bindings, updates preserve existing bindings, and deletes are destructive. The service checks ownership, optimistic updatedAt locks, prompt/category/message/input rules, component includes, cycles, official-preset read-only state, user-skill bindings, and defaults.',
+            'Validate or atomically apply an OpenNovelWriter prompt change-set JSON written under this Codex session artifacts directory. Use only after reading the built-in edit-prompts skill. Always call mode=validate first and show the resulting plan to the author; call mode=apply only after approval. Creates start without model bindings, updates preserve existing bindings, and deletes are destructive. The service checks ownership, optimistic updatedAt locks, prompt/category/message/input rules, component includes, cycles, official-preset read-only state and defaults.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -887,6 +887,24 @@ const tools = [
         },
     },
     {
+        name: 'search_content',
+        description: 'Find novel content by title/name or displayed structural name (not prose, summaries or term aliases). Use match=exact to check whether a named item exists, or contains for ranked candidates. Archived terms and their exclusive tags are excluded. Returns kind, real id (null for term tags), title, context, relativePath and anchor when a projection file exists, and a target usable in compose_scene_continuation inputs.contentSelection. Paths are relative to the Codex session root for this novel; full_novel and act point to the outline index, scenes to their chapter file. Missing paths do not mean missing records. A target identifies content; the receiving tool still validates allowed selections. hasMore indicates another page; advance offset by the returned item count. Read-only.',
+        annotations: { readOnlyHint: true, openWorldHint: false },
+        inputSchema: {
+            type: 'object',
+            properties: {
+                novelId: { type: 'string', minLength: 1, description: 'The current novel id from novel/outline.md.' },
+                query: { type: 'string', minLength: 1, description: 'Title/name to find. Matching ignores surrounding whitespace and case.' },
+                kinds: { type: 'array', minItems: 1, items: { type: 'string', enum: CONTENT_SEARCH_KINDS }, description: 'Optional content types. Omit to search all supported types.' },
+                match: { type: 'string', enum: ['contains', 'exact'], default: 'contains' },
+                limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+                offset: { type: 'integer', minimum: 0, default: 0 },
+            },
+            required: ['novelId', 'query'],
+            additionalProperties: false,
+        },
+    },
+    {
         name: 'retrieve_story_context',
         description:
             'Search the current OpenNovelWriter manuscript for scenes relevant to a natural-language query. BM25 is always used; embedding and reranking follow the novel\'s Memory Recall settings. Set includeKnowledgeGraph to also search Story Entities, Facts, and Episodes with structured time/evidence filtering and one-hop graph expansion. This tool is read-only.',
@@ -907,36 +925,50 @@ const tools = [
     },
     {
         name: 'compose_scene_continuation',
-        description:
-            'Assemble a scene-continuation prompt into a conversation artifact, exactly as the scene-continuation panel would — without a real panel. Use this only when a skill tells you to assemble a specific prompt. Call `describe_prompt` first to learn the inputs. This tool renders the prompt (`promptName`) against a concrete scene plus your `instruction` and `inputs`, pulling in the scene\'s previous/following text, the terms mentioned in your instruction, outlines, etc., and writes a `## system` / `## user` markdown file to `mdPath` under this Codex session artifacts directory. Its job ends there: it does NOT call a model and does NOT touch the manuscript. What happens next (run_llm, showing the result, editing the scene) is decided by the skill / author. Returns the written `mdPath`, the bound `groups`, and any `missingInputs` / `unsupportedRequiredContentSelection` warnings.',
+        description: 'Render a scene-continuation prompt into an editable conversation artifact without creating a panel. Use export_prompt to inspect the definition and inputs. Supports dropdown option IDs, free text, checkbox values and typed contentSelection references; uses the same content expansion as the panel. Returns model groups and missingInputs. Complete missing inputs and compose again before generating. Then write yourself, delegate writing into an artifact, or call run_llm as requested. This tool does not run a model or change manuscript text.',
         inputSchema: {
             type: 'object',
             properties: {
-                promptName: { type: 'string', description: 'The exact prompt name the active skill\'s instructions tell you to use (the same one you passed to describe_prompt).' },
+                promptName: { type: 'string', description: 'Exact name of a Codex-callable scene-continuation prompt.' },
                 novelId: { type: 'string', description: 'The novel id from outline.md.' },
                 sceneId: { type: 'string', description: 'The scene id the continuation is for (from a `<!-- scene_id: ... -->` comment).' },
                 mdPath: { type: 'string', description: 'Absolute output path ending in `.md` under this Codex session artifacts directory. The assembled conversation is written here (overwriting any existing file).' },
-                instruction: { type: 'string', description: 'The continuation instruction — the same free text the author would type into the panel. Terms mentioned here are auto-detected and their knowledge injected, just like the panel. Pass an empty string only if the prompt truly needs no instruction.' },
+                instruction: { type: 'string', description: 'What should happen in this passage: summarize the intended characters, events, turning points, stopping point and relevant writing requirements from the author request or outline. Exclude model selection, file paths and operational requests. Available to the prompt as instruction.text, with detected terms in instruction.terms; the template controls whether they are rendered. Pass an empty string only if the prompt needs no instruction.' },
                 inputs: {
                     type: 'object',
-                    description: 'Values for the prompt\'s inputs, grouped by type (see describe_prompt). Omit any input to use its default. `content_selection` inputs cannot be set here.',
+                    description: 'Input values grouped by type and keyed by input name, including inputs inherited from recursively included components. Root definitions take precedence; otherwise the first component in recursive include order wins. Omit an input to use its default.',
                     properties: {
                         custom: {
                             type: 'object',
-                            description: 'Custom inputs by name → final string value (e.g. {"目标字数": "2000"}). For a dropdown input, pass the chosen option label as the string.',
-                            additionalProperties: { type: 'string' },
+                            description: 'Custom inputs by name. Use dropdown option IDs from export_prompt, not labels or option content; the server expands them. Omit the input to use its default; a supplied object replaces the entire input, with omitted fields empty. Single-select dropdown and free text are mutually exclusive; multi-select permits both. Only use enabled input modes.',
+                            additionalProperties: {
+                                type: 'object',
+                                properties: {
+                                    dropdownOptionIds: { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true, description: 'IDs from custom.dropdown.options, in selection order. Defaults to [].' },
+                                    text: { type: 'string', description: 'Free text when custom.text.enabled is true. Defaults to an empty string.' },
+                                },
+                                additionalProperties: false,
+                            },
                         },
                         checkbox: {
                             type: 'object',
-                            description: 'Checkbox inputs by name → boolean (e.g. {"启用planning": true}).',
+                            description: 'Checkbox inputs by name → boolean (e.g. {"启用planning": true}). Omit to use defaultChecked; false explicitly unchecks it. A required checkbox must be checked.',
                             additionalProperties: { type: 'boolean' },
+                        },
+                        contentSelection: {
+                            type: 'object', description: 'Content selections by input name. Pass search_content targets; allowed kinds, term categories, single/multiple selection and full-text/summary follow the input definition. Repeated targets within one input are deduplicated by kind and identifier before validation, keeping first occurrence order. An empty array clears the selection.',
+                            additionalProperties: { type: 'array', items: { oneOf: [
+                                { type: 'object', properties: { kind: { const: 'full_novel' } }, required: ['kind'], additionalProperties: false },
+                                ...['act', 'act_outline'].map((kind) => ({ type: 'object', properties: { kind: { const: kind }, actNumber: { type: 'integer' } }, required: ['kind', 'actNumber'], additionalProperties: false })),
+                                ...[['chapter', 'chapterId'], ['chapter_outline', 'chapterId'], ['scene', 'sceneId'], ['snippet', 'snippetId'], ['term', 'termId'], ['label', 'labelId'], ['term_tag', 'tag']].map(([kind, key]) => ({ type: 'object', properties: { kind: { const: kind }, [key]: { type: 'string', minLength: 1 } }, required: ['kind', key], additionalProperties: false })),
+                            ] } },
                         },
                     },
                     additionalProperties: false,
                 },
                 afterParagraph: {
                     type: 'string',
-                    description: 'Where the virtual panel sits: an exact, unique run of existing scene prose to place the continuation AFTER (this becomes the previous-text / following-text split, like dropping a panel right after that line). Omit or pass an empty string to place it at the very front of the scene.',
+                    description: 'An exact, unique run of existing scene prose immediately before the intended insertion point. This splits the prompt context into previous and following text; it does not insert generated prose. To continue at the scene end, pass a unique passage ending at the scene end. Omit or pass an empty string to write at the scene front or into an empty scene. Match this position when later applying edit_scene_content.',
                 },
             },
             required: ['promptName', 'novelId', 'sceneId', 'mdPath', 'instruction'],
@@ -1069,6 +1101,12 @@ async function callTool(params) {
         if (!ownerId) throw new Error('OPENNOVELWRITER_OWNER_ID is not configured.')
 
         switch (name) {
+            case 'web_search':
+                if (!deepSeekSearchConnectionId) throw new Error('Web search is not available for this connection.')
+                return toolResult(await callInternalCodexEndpoint('/api/internal/codex/web-search', {
+                    ownerId, connectionId: deepSeekSearchConnectionId,
+                    query: requireNonEmptyString(args.query, 'query'),
+                }, 120_000))
             case 'update_novel_title':
                 return toolResult(await updateNovelTitle(args))
             case 'update_act_title':
@@ -1123,10 +1161,8 @@ async function callTool(params) {
                 return toolResult(await getContinuationDraft(args))
             case 'set_continuation_draft':
                 return toolResult(await setContinuationDraft(args))
-            case 'describe_prompt':
-                return toolResult(await describePrompt(args))
-            case 'export_prompt_library':
-                return toolResult(await exportPromptLibrary(args))
+            case 'export_prompt':
+                return toolResult(await exportPrompt(args))
             case 'apply_prompt_changes':
                 return toolResult(await applyPromptChanges(args))
             case 'export_skill_library':
@@ -1157,6 +1193,11 @@ async function callTool(params) {
                 return toolResult(await callStoryStateTool('retract_manual', args))
             case 'retrieve_story_context':
                 return toolResult(await retrieveStoryContext(args))
+            case 'search_content':
+                return toolResult(await searchContent({
+                    prisma, ownerId,
+                    workspaceRoot: path.join(getOpenNovelWriterDataDir(), 'codex', 'novels', ownerId),
+                }, args))
             case 'compose_scene_continuation':
                 return toolResult(await composeSceneContinuation(args))
             default:
@@ -2614,7 +2655,7 @@ async function runLlm(args) {
                 'Content-Type': 'application/json',
                 'x-onw-internal-token': internalToken,
             },
-            body: JSON.stringify({ ownerId, groupId, system, messages, temperature, maxTokens }),
+            body: JSON.stringify({ ownerId, groupId, system, messages, temperature, maxTokens, sessionId: artifact.sessionId }),
             signal: controller.signal,
         })
         payload = await response.json().catch(() => null)
@@ -2805,14 +2846,10 @@ async function refreshStoryStateProjection(novelId) {
     }, 30_000)
 }
 
-async function describePrompt(args) {
-    const promptName = requireNonEmptyString(args.promptName, 'promptName')
-    const payload = await callInternalCodexEndpoint('/api/internal/codex/describe-prompt', { ownerId, promptName }, 30_000)
-    return { ok: true, prompt: payload.prompt }
-}
-
-async function exportPromptLibrary(args) {
+async function exportPrompt(args) {
     const directoryPath = requireNonEmptyString(args.directoryPath, 'directoryPath')
+    const source = args.source === undefined ? 'library' : requireOneOf(args.source, 'source', ['library', 'builtin'])
+    const name = args.name === undefined ? undefined : requireNonEmptyString(args.name, 'name')
     const output = await resolveArtifactDirectoryOutputPath(directoryPath)
     const session = await prisma.codexSession.findFirst({
         where: { id: output.sessionId, ownerId },
@@ -2820,12 +2857,12 @@ async function exportPromptLibrary(args) {
     })
     if (!session) throw new Error(`Codex session ${output.sessionId} was not found for this connection.`)
 
-    const payload = await callInternalCodexEndpoint('/api/internal/codex/prompt-library', { ownerId }, 30_000)
-    const library = payload.library
+    const payload = await callInternalCodexEndpoint('/api/internal/codex/prompt-export', { ownerId, source, name }, 30_000)
+    const library = payload.data
     await fs.mkdir(output.realPath)
     await Promise.all([
-        fs.mkdir(path.join(output.realPath, 'prompts')),
-        fs.mkdir(path.join(output.realPath, 'examples')),
+        ...(library.prompts.length ? [fs.mkdir(path.join(output.realPath, 'prompts'))] : []),
+        ...(library.examples.length ? [fs.mkdir(path.join(output.realPath, 'examples'))] : []),
     ])
     await fs.writeFile(path.join(output.realPath, 'manifest.json'), `${JSON.stringify(library.manifest, null, 2)}\n`, 'utf8')
     await Promise.all((library.prompts ?? []).map((prompt) =>
@@ -2839,9 +2876,10 @@ async function exportPromptLibrary(args) {
         ok: true,
         directoryPath: output.realPath,
         manifestPath: path.join(output.realPath, 'manifest.json'),
+        source,
+        entryPath: library.manifest.entry ? path.join(output.realPath, library.manifest.entry.fileName) : null,
         promptCount: library.manifest?.promptCount ?? 0,
         exampleCount: library.examples?.length ?? 0,
-        unresolvedSkillBindings: library.unresolvedSkillBindings ?? [],
     }
 }
 
@@ -2986,7 +3024,7 @@ async function composeSceneContinuation(args) {
     const afterParagraph = args.afterParagraph === undefined || args.afterParagraph === null
         ? ''
         : requireString(args.afterParagraph, 'afterParagraph')
-    const inputs = normalizeComposeInputs(args.inputs)
+    const inputs = args.inputs ?? {}
 
     // Resolve + validate the output path before doing any work: it must live in a session this
     // connection owns, so Codex cannot write the assembled prompt anywhere else.
@@ -3013,48 +3051,31 @@ async function composeSceneContinuation(args) {
         promptName: payload.promptName,
         groups: payload.groups ?? [],
         missingInputs: payload.missingInputs ?? [],
-        unsupportedRequiredContentSelection: payload.unsupportedRequiredContentSelection ?? [],
     }
-}
-
-function normalizeComposeInputs(raw) {
-    if (raw === undefined || raw === null) return { custom: {}, checkbox: {} }
-    if (typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new Error('inputs must be an object with optional `custom` and `checkbox` maps.')
-    }
-    const custom = {}
-    if (raw.custom !== undefined && raw.custom !== null) {
-        if (typeof raw.custom !== 'object' || Array.isArray(raw.custom)) {
-            throw new Error('inputs.custom must be an object mapping input names to string values.')
-        }
-        for (const [name, value] of Object.entries(raw.custom)) {
-            if (typeof value !== 'string') throw new Error(`inputs.custom["${name}"] must be a string.`)
-            custom[name] = value
-        }
-    }
-    const checkbox = {}
-    if (raw.checkbox !== undefined && raw.checkbox !== null) {
-        if (typeof raw.checkbox !== 'object' || Array.isArray(raw.checkbox)) {
-            throw new Error('inputs.checkbox must be an object mapping input names to booleans.')
-        }
-        for (const [name, value] of Object.entries(raw.checkbox)) {
-            if (typeof value !== 'boolean') throw new Error(`inputs.checkbox["${name}"] must be a boolean.`)
-            checkbox[name] = value
-        }
-    }
-    return { custom, checkbox }
 }
 
 async function getContinuationDraft(args) {
     const panelId = requireNonEmptyString(args.panelId, 'panelId')
     const draft = await requireOwnedContinuationDraft(panelId)
+    if (!draft.codexSessionId) {
+        throw new Error('Open the continuation panel in Codex before exporting its draft.')
+    }
+    const artifacts = path.join(getOpenNovelWriterDataDir(), 'codex', 'sessions', ownerId, draft.codexSessionId, 'artifacts')
+    await fs.mkdir(artifacts, { recursive: true })
+    const mdPath = path.join(artifacts, `continuation-draft-${encodeURIComponent(panelId)}.md`)
+    const text = [
+        '## assistant',
+        draft.planning.trim() ? `<Planning>\n${draft.planning}\n</Planning>` : '',
+        `<Content>\n${draft.content}\n</Content>`,
+    ].filter(Boolean).join('\n\n') + '\n'
+    await fs.writeFile(mdPath, text, 'utf8')
     return {
         ok: true,
         panelId: draft.panelId,
         sceneId: draft.sceneId,
         chapterId: draft.chapterId,
-        content: draft.content,
-        planning: draft.planning,
+        mdPath,
+        isEmpty: !draft.content.trim(),
         updatedBy: draft.updatedBy,
     }
 }
@@ -3063,30 +3084,14 @@ async function setContinuationDraft(args) {
     const panelId = requireNonEmptyString(args.panelId, 'panelId')
     await requireOwnedContinuationDraft(panelId)
 
-    // Split optional <Planning>/<Content> tags the same way the panel does, so the draft renders
-    // structured (planning collapsed, content as prose) and only content is ever written to the
-    // manuscript. Untagged text is treated as plain content. Newlines are normalized so a reply
-    // that arrives with literal "\\n" escapes still renders as real paragraphs.
-    const parsed = parseContinuationDraftText(await resolveTextOrSource(args, 'text'))
-    const planning =
-        args.planning !== undefined && args.planning !== null
-            ? unescapeDraftNewlines(requireString(args.planning, 'planning')).trim()
-            : parsed.planning
+    const parsed = parseContinuationDraftText(await resolveLlmReplySource(args.source, 'source'))
 
     const updated = await prisma.sceneContinuationDraft.update({
         where: { panelId },
-        data: { content: parsed.content, planning, updatedBy: 'codex' },
+        data: { content: parsed.content, planning: parsed.planning, updatedBy: 'codex' },
         select: { panelId: true, content: true },
     })
     return { ok: true, panelId: updated.panelId, contentLength: updated.content.length }
-}
-
-function unescapeDraftNewlines(text) {
-    return String(text ?? '')
-        .replace(/\r\n?/g, '\n')
-        .replace(/\\r\\n/g, '\n')
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '\t')
 }
 
 function extractDraftTaggedSection(rawText, tagName) {
@@ -3101,12 +3106,12 @@ function extractDraftTaggedSection(rawText, tagName) {
 }
 
 function parseContinuationDraftText(rawText) {
-    const normalized = unescapeDraftNewlines(rawText).trim()
+    const normalized = rawText.trim()
     const content = extractDraftTaggedSection(normalized, 'content')
     const planning = extractDraftTaggedSection(normalized, 'planning')
-    // Fall back to plain text only when neither tag is present (matches the panel's manual flow).
+    const tagged = /<(?:content|planning)>/i.test(normalized)
     return {
-        content: content || (!planning ? normalized : ''),
+        content: tagged ? content : normalized,
         planning,
     }
 }

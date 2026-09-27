@@ -7,6 +7,7 @@ const { mergeRefreshedSession, mergeServerSession, mergeSessionSummary } = await
 
 function createSession(overrides: Partial<CodexSession> = {}): CodexSession {
     return {
+        continuationPanelId: null,
         id: 'session-1',
         category: 'general',
         title: null,

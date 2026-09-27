@@ -1,11 +1,14 @@
 'use client'
 
 import { CODEX_ARTIFACT_ACCEPT, CODEX_ARTIFACT_MAX_COUNT, isCodexArtifactFileName } from '@/lib/codex-artifacts'
+import type { CodexSubagent } from '@/lib/codex-subagents'
+import { CodexSubagentContext, CodexSubagentRow, CodexSubagentView } from '@/components/editor/codex-subagents'
 
 import { type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject, Fragment, createContext, useCallback, useContext, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
     ArrowUp,
+    ArrowLeft,
     BookMarked,
     BookText,
     Bot,
@@ -52,6 +55,8 @@ import { CodexUserInputPanel } from '@/components/editor/codex-user-input'
 import { CodexReasoningBlock } from '@/components/editor/codex-reasoning-block'
 import { useCodexNovelSettings } from '@/components/editor/use-codex-novel-settings'
 import { COMMENT_IMAGE_ATTACHMENT_PREFIX, ImageCommentSummary, formatImageComments } from '@/components/editor/codex-image-comments'
+import { flushContinuationPanel } from '@/lib/continuation-panel-sync'
+import { continuationDraftApi } from '@/lib/api'
 import { AttachmentStrip } from '@/components/image/attachment-strip'
 import { UserImage } from '@/components/image/user-image'
 import { ImageThumbnails } from '@/components/image/image-thumbnails'
@@ -95,7 +100,6 @@ import {
     DEFAULT_CODEX_CHAT_SETTINGS,
     isAuthenticatedChatGptCodexConnection,
     isCodexFastModeAllowed,
-    isGptCodexModelId,
 } from '@/lib/codex-config'
 import {
     modelSupportsCodexFastMode,
@@ -114,17 +118,16 @@ import { collectWebReferences, renderSimpleMarkdown, renderWebReferenceList } fr
 import { plainTextToSnippetHtml } from '@/lib/snippet-html'
 import { type WriteNavTarget } from '@/components/editor/plan-view'
 import { actApi, chapterApi, materialApi, outlineApi, sceneEditApi, skillApi, snippetApi, type Act, type Chapter, type MaterialSummary, type OutlineSummary, type SceneEditStatus, type Skill, type Snippet } from '@/lib/api'
-import { normalizeSkillCategory } from '@/lib/skills'
+import { isSkillAvailableInSession } from '@/lib/skills'
 import { getCodexAnnotationReferences, type CodexResponseAnnotation } from '@/lib/codex-response-annotations'
 import { CodexAnnotationReference, CodexResponseAnnotationsProvider, ResponseAnnotationSummary, SelectableCodexResponse } from './codex-response-annotations'
 import { useStoredTermEntries } from '@/components/editor/terms/use-stored-term-entries'
 import type { TermEntry } from '@/components/editor/terms/types'
-import { CodexSkillTweakDialog, type CodexRenderedBlock } from '@/components/editor/codex-skill-tweak-dialog'
 import { CodexModelPicker } from '@/components/editor/codex-model-picker'
 import { CodexSessionIdContext } from '@/components/editor/codex-session-context'
 import type { SceneEditHunk, SceneEditToolResult } from '@/lib/codex-scene-edit'
 import { CodexWorkEventGroup, type WorkGroupStates, type ChangeWorkGroup } from '@/components/editor/codex-work-events'
-import { CodexTurnNavigator, type CodexTurnNavigatorEntry } from '@/components/editor/codex-turn-navigator'
+import { ConversationTurnNavigator, type ConversationTurnNavigatorEntry } from '@/components/editor/conversation-turn-navigator'
 import { emitSceneEditsChanged, SCENE_EDITS_CHANGED_EVENT } from '@/components/editor/scene-edit-events'
 import {
     codexApi,
@@ -141,7 +144,6 @@ import {
     type CodexServiceTier,
     type CodexSessionMessage,
     type CodexThreadGoal,
-    type CodexPromptArtifact,
 } from '@/lib/api'
 
 type RightPanelCodexProps = {
@@ -2676,6 +2678,11 @@ function CodexTurnBody({ messages, running, activityStates, onActivityChange, re
 
     for (let index = 0; index < messages.length;) {
         const message = messages[index]
+        if (message?.kind === 'subagent' && message.subagent) {
+            nodes.push(<CodexSubagentRow key={message.id} agent={message.subagent} />)
+            index += 1
+            continue
+        }
         if (message?.kind === 'reasoning') {
             nodes.push(<CodexReasoningBlock key={message.id} message={message} running={running} expanded={reasoningStates[message.id]} onExpandedChange={onReasoningChange} />)
             index += 1
@@ -2815,8 +2822,9 @@ export function CodexTurnGroup({
     const middleMessages = messages.slice(1, lastAssistantIndex)
     const editMessages = middleMessages.filter(isSceneEditToolMessage)
     const imageGenMessages = middleMessages.filter(isImageGenerationMessage)
+    const subagentMessages = middleMessages.filter((message) => message.kind === 'subagent' && message.subagent)
     const workMessages = middleMessages.filter(
-        (message) => message.kind !== 'steer' && !isSceneEditToolMessage(message) && !isImageGenerationMessage(message)
+        (message) => message.kind !== 'steer' && message.kind !== 'subagent' && !isSceneEditToolMessage(message) && !isImageGenerationMessage(message)
     )
     const steerMessages = middleMessages.filter((message) => message.kind === 'steer')
     const finalAssistantMessage = messages[lastAssistantIndex]
@@ -2848,6 +2856,7 @@ export function CodexTurnGroup({
                 const result = parseSceneEditToolMessage(message)
                 return result ? <SceneEditCard key={message.id} result={result} /> : null
             })}
+            {subagentMessages.map((message) => <CodexSubagentRow key={message.id} agent={message.subagent!} />)}
             {finalAssistantMessage && <MessageBubble message={finalAssistantMessage} />}
             {imageGenMessages.map((message) => (
                 <ImageGenerationCard key={message.id} message={message} />
@@ -2891,7 +2900,7 @@ function CodexTimeline({
             .filter(({ turn }) => turn[0]?.role === 'user'),
         [turns]
     )
-    const navigatorEntries = useMemo<CodexTurnNavigatorEntry[]>(
+    const navigatorEntries = useMemo<ConversationTurnNavigatorEntry[]>(
         () => navigableTurns.map(({ turn }) => {
             const userMessage = turn[0]
             const assistantMessage = [...turn].reverse().find((message) => message.role === 'assistant')
@@ -2976,7 +2985,7 @@ function CodexTimeline({
         <CodexAnnotationReferencesContext.Provider value={annotationReferences}>
         <div className="relative min-w-0">
             <div className="pointer-events-none sticky top-3 z-30 h-0">
-                <CodexTurnNavigator
+                <ConversationTurnNavigator
                     entries={navigatorEntries}
                     activeIndex={activeTurnIndex}
                     height={navigatorHeight}
@@ -3115,11 +3124,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
     const [outlines, setOutlines] = useState<OutlineSummary[] | null>(null)
     const mentionDataRevisionRef = useRef(0)
     const [mentionDataRevision, setMentionDataRevision] = useState(0)
-    // When a `/`-invoked ai_chat skill has a bound prompt, a Tweak dialog lets the author fill it
-    // (auto-injecting overview + terms) and ship the resolved blocks as the message's artifact.
-    const [tweakOpen, setTweakOpen] = useState(false)
-    const [tweakChatInput, setTweakChatInput] = useState('')
-    const [tweakBlocks, setTweakBlocks] = useState<CodexRenderedBlock[] | null>(null)
 
     const handleAttachmentError = (error: ImageAttachmentError) => {
         const key = (
@@ -3136,12 +3140,44 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
     const sessions = sessionState?.sessions ?? []
     const selectedSessionId = sessionState?.selectedSessionId ?? null
     const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null
+    const availableSkills = useMemo(
+        () => (skills ?? []).filter((skill) => isSkillAvailableInSession(skill, selectedSession?.category ?? 'general')),
+        [skills, selectedSession?.category]
+    )
     const historyLoaded = selectedSession?.historyLoaded ?? false
     const historyError = selectedSessionId ? historyRequests[selectedSessionId]?.error : null
     useEffect(() => {
         if (selectedSessionId && !historyLoaded) void loadSession(novelId, selectedSessionId)
     }, [historyLoaded, loadSession, novelId, selectedSessionId])
     const activeEditingImage = editingImage?.sessionId === selectedSessionId ? editingImage : null
+    const [subagentNavigation, setSubagentNavigation] = useState<{ sessionId: string; agents: CodexSubagent[] } | null>(null)
+    const activeSubagent = subagentNavigation?.sessionId === selectedSessionId ? subagentNavigation.agents.at(-1) : undefined
+    const [subagentSnapshots, setSubagentSnapshots] = useState(() => new Map<CodexSubagent, CodexSubagent>())
+    const updateSubagentSnapshot = useCallback((source: CodexSubagent, snapshot: CodexSubagent) => {
+        setSubagentSnapshots((current) => new Map(current).set(source, snapshot))
+    }, [])
+    const activeSubagentName = activeSubagent ? subagentSnapshots.get(activeSubagent)?.name || activeSubagent.name || t('codex.subagents.agent') : undefined
+    const subagentReturn = useRef<{ element: HTMLElement | null; scrollTop: number } | null>(null)
+    const openSubagent = useCallback((agent: CodexSubagent) => {
+        if (!selectedSessionId) return
+        if (!activeSubagent) subagentReturn.current = { element: document.activeElement instanceof HTMLElement ? document.activeElement : null, scrollTop: scrollRef.current?.scrollTop ?? 0 }
+        setSubagentNavigation((current) => ({ sessionId: selectedSessionId, agents: [...(current?.sessionId === selectedSessionId ? current.agents : []), agent] }))
+    }, [activeSubagent, selectedSessionId])
+    const closeSubagent = () => {
+        const returningToMain = subagentNavigation?.agents.length === 1
+        setSubagentNavigation((current) => current ? { ...current, agents: current.agents.slice(0, -1) } : null)
+        if (returningToMain) requestAnimationFrame(() => {
+            if (scrollRef.current && subagentReturn.current) scrollRef.current.scrollTop = subagentReturn.current.scrollTop
+            subagentReturn.current?.element?.focus({ preventScroll: true })
+        })
+    }
+    const openContinuationPanel = () => {
+        const panelId = selectedSession?.continuationPanelId
+        if (!panelId) return
+        void continuationDraftApi.get(panelId).then(({ draft }) => {
+            if (draft) onNavigateToWrite?.({ kind: 'scene', chapterId: draft.chapterId, sceneId: draft.sceneId })
+        }).catch((error) => setRunError(String(error)))
+    }
     const registerGeneratedImages = useCallback((key: string, images: CodexEditingImage[]) => {
         if (!selectedSessionId) return () => {}
         setImageCatalog((current) => ({ ...current, [key]: { sessionId: selectedSessionId, images } }))
@@ -3635,14 +3671,12 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
     }
 
     const ensureSkills = async (): Promise<Skill[]> => {
-        if (skills) return skills
         try {
             const { skills: list } = await skillApi.list()
-            const mentionable = list.filter(
-                (skill) => skill.enabled && normalizeSkillCategory(skill.category) === 'ai_chat'
+            setSkills(list)
+            return list.filter(
+                (skill) => isSkillAvailableInSession(skill, selectedSession?.category ?? 'general')
             )
-            setSkills(mentionable)
-            return mentionable
         } catch {
             setSkills([])
             return []
@@ -3651,9 +3685,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
 
     const slashMenuOpen = slash !== null && !slashCommandDismissed
 
-    // Refresh once whenever a new slash-menu interaction starts so newly created, renamed, enabled,
-    // or deleted skills appear without reloading the editor. Scene-bound skills stay in their own
-    // structured workflows; only enabled AI-chat skills are composer commands.
+    // Refresh skills when opening the menu or switching session categories.
     useEffect(() => {
         if (!slashMenuOpen) return
         let cancelled = false
@@ -3661,11 +3693,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         void skillApi.list()
             .then(({ skills: list }) => {
                 if (cancelled) return
-                setSkills(
-                    list.filter(
-                        (skill) => skill.enabled && normalizeSkillCategory(skill.category) === 'ai_chat'
-                    )
-                )
+                setSkills(list)
             })
             .catch(() => {
                 if (!cancelled) setSkills([])
@@ -3673,7 +3701,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         return () => {
             cancelled = true
         }
-    }, [slashMenuOpen])
+    }, [slashMenuOpen, selectedSession?.category])
 
     const ensureSnippets = async (): Promise<Snippet[]> => {
         if (snippets) return snippets
@@ -3880,8 +3908,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [draft, modelGroups, snippets, materials, acts, chapters, outlines, mentionDataRevision])
 
-    // Skills use `/`, not `@`. Load them for restored drafts so slash-skill coloring and the bound
-    // prompt Tweak action survive a reload.
+    // Load skills to highlight slash commands in restored drafts.
     useEffect(() => {
         // An open slash menu owns its refresh request; do not issue a duplicate fetch here.
         if (!draft.includes('/') || skills !== null || slashMenuOpen) return
@@ -3906,8 +3933,8 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
     )
 
     const skillTargets = useMemo<ComposerMentionTarget[]>(
-        () => (skills ?? []).map((skill) => ({ name: skill.name, kind: 'skill' as const })),
-        [skills]
+        () => availableSkills.map((skill) => ({ name: skill.name, kind: 'skill' as const })),
+        [availableSkills]
     )
 
     const composerSegments = useMemo(
@@ -3915,30 +3942,17 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         [draft, mentionTargets, skillTargets]
     )
 
-    // The first `/`-invoked ai_chat skill that carries a bound prompt — it gets a Tweak dialog.
-    const activePromptSkill = useMemo(() => {
-        if (!draft.includes('/') || !skills) return null
-        const promptSkills = skills.filter((skill) => skill.prompt?.trim())
-        if (promptSkills.length === 0) return null
-        const { skillIds } = expandSkillCommands(draft, promptSkills)
-        return promptSkills.find((skill) => skill.id === skillIds[0]) ?? null
-    }, [draft, skills])
-
-    // Drop the staged artifact + chat input when the active prompt-skill changes or disappears so a
-    // stale draft can't be attached to a different skill's message.
-    const activePromptSkillId = activePromptSkill?.id ?? null
-    useEffect(() => {
-        setTweakBlocks(null)
-        setTweakChatInput('')
-        setTweakOpen(false)
-    }, [activePromptSkillId])
-
     const timelineMessages = useMemo(() => {
         if (!selectedSession) return []
-        return mergeTimelineMessages(
+        const messages = mergeTimelineMessages(
             selectedSession.messages,
             optimisticSteerMessagesBySession[selectedSession.id] ?? []
         )
+        if (!selectedSession.continuationPanelId) return messages
+        return messages.map((message) => message.jsonArtifacts && (message.role === 'user' || message.kind === 'steer') ? {
+            ...message,
+            jsonArtifacts: message.jsonArtifacts.filter((fileName) => !/^continuation-[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}\.(?:md|json)$/i.test(fileName)),
+        } : message)
     }, [optimisticSteerMessagesBySession, selectedSession])
     const latestImageEditorTurn = useMemo(
         () => activeEditingImage ? (splitMessagesIntoTurns(timelineMessages).at(-1) ?? [])
@@ -4108,7 +4122,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         const builtins = builtinSlashCommands.filter((item) =>
             matches(`${item.name} ${item.title} ${item.description}`)
         )
-        const skillItems: SlashCommandItem[] = (skills ?? [])
+        const skillItems: SlashCommandItem[] = availableSkills
             .filter((skill) => matches(`${skill.name} ${skill.description ?? ''}`))
             .map((skill) => ({
                 kind: 'skill',
@@ -4118,7 +4132,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                 disabled: running && !queueingEnabled,
             }))
         return [...builtins, ...skillItems].slice(0, 12)
-    }, [builtinSlashCommands, queueingEnabled, running, skills, slash, slashMenuOpen])
+    }, [builtinSlashCommands, queueingEnabled, running, availableSkills, slash, slashMenuOpen])
 
     useEffect(() => {
         const firstEnabled = slashMatches.findIndex((item) => !item.disabled)
@@ -4221,7 +4235,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         content: string,
         sessionId?: string | null,
         skillIds?: string[],
-        promptArtifact?: CodexPromptArtifact,
         attachments?: string[],
         artifactFiles?: string[],
         responseAnnotations?: CodexResponseAnnotation[]
@@ -4233,7 +4246,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         try {
             await sendMessage(novelId, targetSessionId, content.trim(), {
                 skillIds,
-                promptArtifact,
                 attachments,
                 artifactFiles,
                 responseAnnotations,
@@ -4299,7 +4311,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                     merged.content,
                     sessionId,
                     undefined,
-                    undefined,
                     merged.attachments,
                     merged.artifactFiles,
                     merged.responseAnnotations
@@ -4329,7 +4340,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
             const result = await sendContent(
                 message.content,
                 sessionId,
-                undefined,
                 undefined,
                 message.attachments,
                 message.artifactFiles,
@@ -4362,6 +4372,8 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         setOptimisticSteerMessages(targetSessionId, (current) => [...current, optimisticMessage])
 
         try {
+            const linked = useEditorCodexStore.getState().sessionsByNovel[novelId ?? '']?.sessions.find((session) => session.id === targetSessionId)
+            await flushContinuationPanel(linked?.continuationPanelId)
             await codexSessionApi.steerMessage(targetSessionId, normalizedContent, attachments, responseAnnotations, artifactFiles)
             updateDraft(novelId, targetSessionId, '')
         } catch (error) {
@@ -4588,26 +4600,15 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                 return
             }
 
-            // If the author tweaked a bound-prompt skill, ship the resolved blocks so the route can
-            // materialize them into the session's artifacts for run_llm / context.
-            const promptArtifact: CodexPromptArtifact | undefined =
-                activePromptSkill && skillIds.includes(activePromptSkill.id) && tweakBlocks && tweakBlocks.length > 0
-                    ? { skillId: activePromptSkill.id, renderedBlocks: tweakBlocks }
-                    : undefined
-
-            setTweakOpen(false)
             clearResponseAnnotations(targetSessionId)
             await sendContent(
                 content,
                 targetSessionId,
                 skillIds,
-                promptArtifact,
                 attachments,
                 artifactFiles,
                 annotations
             )
-            setTweakBlocks(null)
-            setTweakChatInput('')
         })().catch((error) => {
             setRunError(error instanceof Error ? error.message : String(error))
         }).finally(() => {
@@ -4841,11 +4842,13 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
         <ImageViewerExtraActionsProvider render={(src) => <TermGalleryImportButton novelId={novelId} src={src} />}>
         <CodexImageEditContext.Provider value={openImageEditor}>
         <CodexImageCatalogContext.Provider value={registerGeneratedImages}>
+        <CodexSubagentContext.Provider value={{ open: openSubagent, snapshots: subagentSnapshots }}>
         <div className="flex h-full min-h-0 flex-col bg-background">
             <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
+                    {activeSubagent && <Button type="button" size="icon-sm" variant="ghost" onClick={closeSubagent} autoFocus aria-label={t('codex.subagents.back')} title={t('codex.subagents.back')}><ArrowLeft className="h-4 w-4" /></Button>}
                     {activeEditingImage ? <ImageIcon className="h-4 w-4 shrink-0 text-primary" /> : <Bot className="h-4 w-4 text-primary" />}
-                    <span className="truncate text-sm font-medium" title={sessionTitle}>{sessionTitle}</span>
+                    <span className="truncate text-sm font-medium" title={activeSubagentName || sessionTitle}>{activeSubagentName || sessionTitle}</span>
                     {activeEditingImage && (
                         <Button
                             type="button"
@@ -4862,23 +4865,34 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                         </Button>
                     )}
                 </div>
-                {activeEditingImage ? (
+                {activeSubagent ? null : activeEditingImage ? (
                     <div ref={setImageEditorToolbar} className="shrink-0" />
                 ) : (
-                <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="ghost"
-                    onClick={() => void createSession(novelId)}
-                    title={t('codex.newSession')}
-                    aria-label={t('codex.newSession')}
-                >
-                    <Plus className="h-4 w-4" />
-                </Button>
+                    <div className="flex shrink-0 items-center gap-1">
+                        {selectedSession?.continuationPanelId && (
+                            <Button type="button" size="sm" variant="ghost" className="gap-1.5" onClick={openContinuationPanel} title={t('sceneContinuation.attachment')}>
+                                <ArrowUpRight className="h-4 w-4" />
+                                {t('sceneContinuation.attachment')}
+                            </Button>
+                        )}
+                        <Button
+                            type="button"
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => void createSession(novelId)}
+                            title={t('codex.newSession')}
+                            aria-label={t('codex.newSession')}
+                        >
+                            <Plus className="h-4 w-4" />
+                        </Button>
+                    </div>
                 )}
             </div>
 
             <div className="relative flex min-h-0 flex-1 flex-col">
+            {activeSubagent && selectedSessionId && <ImageViewerExtraActionsProvider render={() => null}>
+                <CodexSubagentView key={`${selectedSessionId}:${activeSubagent.threadId}`} sessionId={selectedSessionId} agent={activeSubagent} parentRunning={running} showReasoning={showReasoning} onSnapshot={updateSubagentSnapshot} />
+            </ImageViewerExtraActionsProvider>}
             {activeEditingImage && <CodexImageEditorCanvas
                 key={activeEditingImage.sessionId}
                 ref={imageEditorRef}
@@ -4905,9 +4919,9 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
             {activeEditingImage && runError && <div role="alert" className="absolute inset-x-4 top-14 z-20 rounded-lg border border-destructive/30 bg-background px-3 py-2 text-xs text-destructive">{runError}</div>}
             <div
                 ref={scrollRef}
-                className={cn('min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain', activeEditingImage && 'invisible pointer-events-none')}
-                inert={activeEditingImage ? true : undefined}
-                aria-hidden={activeEditingImage ? true : undefined}
+                className={cn('min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain', (activeEditingImage || activeSubagent) && 'invisible pointer-events-none')}
+                inert={activeEditingImage || activeSubagent ? true : undefined}
+                aria-hidden={activeEditingImage || activeSubagent ? true : undefined}
                 onWheel={() => {
                     if (selectedSession) markSessionRead(novelId, selectedSession.id)
                 }}
@@ -4953,7 +4967,7 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                 </div>
             </div>
 
-            <div className={cn('shrink-0 p-3', activeEditingImage && 'relative z-10 mx-auto max-h-[85%] w-full max-w-4xl overflow-y-auto')}>
+            <div hidden={!!activeSubagent} inert={activeSubagent ? true : undefined} aria-hidden={activeSubagent ? true : undefined} className={cn('shrink-0 p-3', activeSubagent && 'hidden', activeEditingImage && 'relative z-10 mx-auto max-h-[85%] w-full max-w-4xl overflow-y-auto')}>
                 {activeEditingImage && (
                     <CodexImageLatestTurn key={`${activeEditingImage.sessionId}:${activeEditingImage.src}`}>
                         <CodexTurnGroup messages={latestImageEditorTurn} running={running} showReasoning={showReasoning} />
@@ -5106,21 +5120,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                     />
                 ) : (
                     <>
-                    {activePromptSkill && (
-                        <div className="mb-2 flex justify-end">
-                            <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className="h-8 gap-2 rounded-full"
-                                onClick={() => setTweakOpen(true)}
-                            >
-                                <SlidersHorizontal className="h-4 w-4" />
-                                {t('codexSkillTweak.tweak')}
-                                {tweakBlocks && tweakBlocks.length > 0 && <Check className="h-3.5 w-3.5 text-emerald-600" />}
-                            </Button>
-                        </div>
-                    )}
                     <div
                         className={cn(
                             'relative rounded-[1.6rem] border bg-background px-3 py-3 shadow-sm transition-colors',
@@ -5149,6 +5148,12 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                         editable
                         className="mb-2"
                     />
+                    {selectedSession?.continuationPanelId && historyLoaded && !selectedSession.messages.some((message) => message.role === 'user') && (
+                        <button type="button" className="mb-2 flex max-w-full items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-sm" onClick={openContinuationPanel}>
+                            <FileText className="h-4 w-4 shrink-0" />
+                            <span className="truncate">{t('sceneContinuation.attachment')}</span>
+                        </button>
+                    )}
                     <div className="mb-2 flex flex-wrap items-end gap-2">
                         <AttachmentStrip items={imageAttachments.items} onRemove={imageAttachments.removeItem} />
                         <ImageCommentSummary items={imageAttachments.items} onRemove={removeCommentAttachments} />
@@ -5583,9 +5588,6 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
                                     reasoningEffort={reasoningEffort}
                                     serviceTier={serviceTier}
                                     models={activeModelCatalog}
-                                    includeBuiltinModels={
-                                        sessionConnection?.providerType !== 'custom' || isGptCodexModelId(modelId)
-                                    }
                                     showServiceTier={showServiceTier}
                                     fastModeDescription={fastModeDescription}
                                     modelSettingsDisabled={running}
@@ -5624,22 +5626,9 @@ export function RightPanelCodex({ novelId, onNavigateToWrite }: RightPanelCodexP
             </div>
         </div>
         </div>
+        </CodexSubagentContext.Provider>
         </CodexImageCatalogContext.Provider>
         </CodexImageEditContext.Provider>
-        {activePromptSkill && novelId && (
-            <CodexSkillTweakDialog
-                novelId={novelId}
-                sessionId={selectedSession?.id ?? null}
-                skill={activePromptSkill}
-                open={tweakOpen}
-                onOpenChange={setTweakOpen}
-                chatInput={tweakChatInput}
-                onChatInputChange={setTweakChatInput}
-                onBlocksChange={setTweakBlocks}
-                onSend={submit}
-                disabled={running}
-            />
-        )}
         </ImageViewerExtraActionsProvider>
         </SceneEditStatusContext.Provider>
         </CodexNavContext.Provider>

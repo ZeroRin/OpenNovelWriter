@@ -149,7 +149,6 @@ export async function exportSkillLibrary(ownerId: string) {
                 name: skill.name,
                 description: skill.description,
                 category: skill.category,
-                prompt: skill.prompt,
                 enabled: skill.enabled,
                 updatedAt: skill.updatedAt.toISOString(),
                 sourcePresetId: skill.sourcePresetId,

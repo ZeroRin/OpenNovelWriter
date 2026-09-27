@@ -19,9 +19,13 @@ function fixture(composerMode = 'default', workspace = '/unused') {
             update: async ({ data }) => { row = { ...row, ...data }; return row },
         } }) },
         '@/lib/server/codex-session-workspace': { getCodexSessionWorkspacePath: () => workspace },
+        '@/lib/server/codex-session-skills': {
+            resolveCodexSessionSkillReferences: async () => [],
+            rewriteCodexSkillReferences: (content) => content,
+        },
         '@/lib/server/codex-app-server': {
             reserveActiveCodexRun: () => ({}), finishActiveCodexRun: () => {}, isCodexRunInterruptedError: () => false,
-            runNovelCodexTurn: async (input) => { calls.push(input); return { status: 'completed', threadId: 'thread', assistantText: 'Received.' } },
+            runNovelCodexTurn: async (input) => { calls.push(input); return { status: 'completed', threadId: 'thread', assistantMessages: [{ id: 'reply', content: 'Received.', createdAt: now.toISOString() }] } },
         },
     }
     const pure = new Set(['@/lib/codex-artifacts', '@/lib/server/codex-session', '@/lib/server/storage', '@/lib/codex-response-annotations', '@/lib/server/codex-assistant-text', '@/lib/server/codex-live-messages', '@/lib/server/codex-message-projection'])

@@ -1,6 +1,5 @@
 import {
     DEFAULT_CODEX_MODEL,
-    expandNativeCodexModels,
     parseCodexProviderModelsJson,
 } from '@/lib/codex-config'
 import { getPrismaClient } from '@/lib/db'
@@ -106,7 +105,7 @@ export async function rebindDraftCodexSessionsToConnection(connection: RebindCon
 
 function resolveConnectionDefaultModelId(connection: RebindConnection) {
     if (connection.providerType === 'custom') {
-        const models = expandNativeCodexModels(parseCodexProviderModelsJson(connection.modelsJson))
+        const models = parseCodexProviderModelsJson(connection.modelsJson)
         const preferred = normalizeCodexStringId(connection.defaultModelId)
         if (preferred && models.some((model) => model.id === preferred)) return preferred
         if (models[0]?.id) return models[0].id
@@ -116,7 +115,7 @@ function resolveConnectionDefaultModelId(connection: RebindConnection) {
 
 function resolveConnectionDefaultReasoningEffort(connection: RebindConnection, modelId: string) {
     if (connection.providerType !== 'custom') return DEFAULT_CODEX_REASONING_EFFORT
-    const models = expandNativeCodexModels(parseCodexProviderModelsJson(connection.modelsJson))
+    const models = parseCodexProviderModelsJson(connection.modelsJson)
     const model = models.find((entry) => entry.id === modelId)
     return normalizeCodexReasoningEffort(model?.defaultReasoningEffort) ?? DEFAULT_CODEX_REASONING_EFFORT
 }

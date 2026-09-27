@@ -1,6 +1,6 @@
 import nunjucks, { type ILoader, type LoaderSource } from 'nunjucks'
 
-import { extractNunjucksIncludeNamesFromText, extractReferencedInputNamesFromText } from '@/lib/prompt-template'
+import { countChatUserInputReferencesInText, extractNunjucksIncludeNamesFromText, extractReferencedInputNamesFromText } from '@/lib/prompt-template'
 
 export type PromptTemplateRenderContext = {
     novelLanguage?: string | null
@@ -32,16 +32,26 @@ export type PromptTemplateRenderWarning =
     | { type: 'unclosed_template_expr'; name: string; open: '{{'; pos: number }
     | { type: 'unsupported_variable_expr'; name: string; expr: string }
 
+export type PromptTemplateContextItem = { key: string; value: string }
+
+export type PromptTemplateChatState = {
+    contextItems: PromptTemplateContextItem[]
+    userInput: { before: string; after: string } | null
+}
+
 export type PromptTemplateRenderOptions = {
+    chat?: { previousContextItems: PromptTemplateContextItem[] }
     maxDepth?: number
 }
 
 export type PromptTemplateRenderMessagesResult = {
     texts: string[]
     warnings: PromptTemplateRenderWarning[]
+    chatState?: PromptTemplateChatState
 }
 
 export type PromptTemplateRenderListItem = {
+    key?: string
     text?: string | null
     value?: string | null
 }
@@ -58,6 +68,8 @@ export type PromptTemplateRenderResolvers = {
     resolveInputScenes?: (name: string) => PromptTemplateRenderListItem[] | null | undefined
     resolveInputActOutlines?: (name: string) => PromptTemplateRenderListItem[] | null | undefined
     resolveInputChapterOutlines?: (name: string) => PromptTemplateRenderListItem[] | null | undefined
+    resolveTextTermIds?: (text: string) => string[] | null | undefined
+    applyTermPolicy?: (termIds: string[]) => string[]
     resolveTermText?: (termId: string) => string | null | undefined
     resolveTermValue?: (termId: string) => string | null | undefined
 }
@@ -67,6 +79,7 @@ type TemplateListValue = {
     text: string
     value: string
     toString: () => string
+    [SOURCE_VALUE]: string
 }
 
 type TemplateTermCollection = TemplateListValue & {
@@ -103,6 +116,7 @@ type EncodedIncludePayload = {
 }
 
 const INTERNAL_INCLUDE_PREFIX = '__onw_nunjucks_include__:'
+const SOURCE_VALUE = Symbol('template source value')
 const REWRITABLE_INCLUDE_TAG_RE = /\{%(\-)?(\s*)include(\s+)(['"])([\s\S]*?)\4([\s\S]*?)(\-)?%\}/g
 
 function normalizeName(value: string) {
@@ -148,10 +162,12 @@ function renderNormalizedTermIds(termIds: string[], resolvers: PromptTemplateRen
     return parts.join('\n\n').trim()
 }
 
-function normalizeListItems(values: PromptTemplateRenderListItem[] | null | undefined) {
-    if (!Array.isArray(values) || values.length === 0) return [] as Array<{ text: string; value: string }>
+type ContextTracker = (key: string, value: string) => boolean
 
-    const out: Array<{ text: string; value: string }> = []
+function normalizeListItems(values: PromptTemplateRenderListItem[] | null | undefined) {
+    if (!Array.isArray(values) || values.length === 0) return [] as Array<{ key?: string; text: string; value: string }>
+
+    const out: Array<{ key?: string; text: string; value: string }> = []
     const seen = new Set<string>()
     for (const item of values) {
         if (!item || typeof item !== 'object') continue
@@ -161,13 +177,14 @@ function normalizeListItems(values: PromptTemplateRenderListItem[] | null | unde
         const key = JSON.stringify([text, value])
         if (seen.has(key)) continue
         seen.add(key)
-        out.push({ text, value })
+        out.push({ ...(item.key ? { key: item.key } : {}), text, value })
     }
     return out
 }
 
-function createTemplateListValue(items: PromptTemplateRenderListItem[] | null | undefined): TemplateListValue {
-    const normalized = normalizeListItems(items)
+function createTemplateListValue(items: PromptTemplateRenderListItem[] | null | undefined, track?: ContextTracker): TemplateListValue {
+    const source = normalizeListItems(items)
+    const normalized = source.filter((item) => !item.key || !track || track(item.key, item.value))
     const text = normalized.map((item) => item.text).filter(Boolean).join('\n').trim()
     const value = normalized.map((item) => item.value).filter(Boolean).join('\n\n').trim()
     return {
@@ -175,11 +192,14 @@ function createTemplateListValue(items: PromptTemplateRenderListItem[] | null | 
         text,
         value,
         toString: () => value,
+        [SOURCE_VALUE]: source.map((item) => item.value).filter(Boolean).join('\n\n').trim(),
     }
 }
 
-function createTemplateTermCollection(termIds: string[] | null | undefined, resolvers: PromptTemplateRenderResolvers): TemplateTermCollection {
-    const ids = normalizeTermIds(termIds)
+function createTemplateTermCollection(termIds: string[] | null | undefined, resolvers: PromptTemplateRenderResolvers, track?: ContextTracker): TemplateTermCollection {
+    const requestedIds = normalizeTermIds(termIds)
+    const ids = normalizeTermIds(resolvers.applyTermPolicy?.(requestedIds) ?? requestedIds)
+        .filter((id) => !track || track(`term:${id}`, renderNormalizedTermIds([id], resolvers, 'value')))
     return {
         ids,
         ...createTemplateListValue(
@@ -227,8 +247,16 @@ function extractTemplateTermIds(value: unknown) {
     return [] as string[]
 }
 
-function unionTemplateTermCollections(left: unknown, right: unknown, resolvers: PromptTemplateRenderResolvers) {
-    return createTemplateTermCollection([...extractTemplateTermIds(left), ...extractTemplateTermIds(right)], resolvers)
+function unionTemplateTermCollections(left: unknown, right: unknown, resolvers: PromptTemplateRenderResolvers, track?: ContextTracker) {
+    return createTemplateTermCollection([...extractTemplateTermIds(left), ...extractTemplateTermIds(right)], resolvers, track)
+}
+
+function expandTemplateContent(value: unknown): string {
+    if (value == null) return ''
+    if (Array.isArray(value)) return value.map(expandTemplateContent).filter(Boolean).join('\n\n')
+    if (typeof value === 'object' && SOURCE_VALUE in value) return String(value[SOURCE_VALUE])
+    if (typeof value === 'object' && 'value' in value && typeof value.value === 'string') return value.value
+    return String(value)
 }
 
 function dedupeWarnings(warnings: PromptTemplateRenderWarning[]) {
@@ -322,7 +350,7 @@ function collectTemplateAnalysis(params: {
     }
 }
 
-function buildInputsContext(inputNames: Iterable<string>, resolvers: PromptTemplateRenderResolvers, warnings: PromptTemplateRenderWarning[]) {
+function buildInputsContext(inputNames: Iterable<string>, resolvers: PromptTemplateRenderResolvers, warnings: PromptTemplateRenderWarning[], track?: ContextTracker) {
     const inputs: Record<string, TemplateInputValue> = {}
 
     for (const name of inputNames) {
@@ -335,28 +363,29 @@ function buildInputsContext(inputNames: Iterable<string>, resolvers: PromptTempl
         inputs[name] = {
             text: normalizeTextValue(resolved),
             value: normalizeTextValue(resolved),
-            term: createTemplateTermCollection(termIds, resolvers),
-            termTag: createTemplateTermCollection(termTagTermIds, resolvers),
-            snippet: createTemplateListValue(resolvers.resolveInputSnippets?.(name)),
-            fullNovel: createTemplateListValue(resolvers.resolveInputFullNovels?.(name)),
-            act: createTemplateListValue(resolvers.resolveInputActs?.(name)),
-            chapter: createTemplateListValue(resolvers.resolveInputChapters?.(name)),
-            scene: createTemplateListValue(resolvers.resolveInputScenes?.(name)),
-            actOutline: createTemplateListValue(resolvers.resolveInputActOutlines?.(name)),
-            chapterOutline: createTemplateListValue(resolvers.resolveInputChapterOutlines?.(name)),
+            term: createTemplateTermCollection(termIds, resolvers, track),
+            termTag: createTemplateTermCollection(termTagTermIds, resolvers, track),
+            snippet: createTemplateListValue(resolvers.resolveInputSnippets?.(name), track),
+            fullNovel: createTemplateListValue(resolvers.resolveInputFullNovels?.(name), track),
+            act: createTemplateListValue(resolvers.resolveInputActs?.(name), track),
+            chapter: createTemplateListValue(resolvers.resolveInputChapters?.(name), track),
+            scene: createTemplateListValue(resolvers.resolveInputScenes?.(name), track),
+            actOutline: createTemplateListValue(resolvers.resolveInputActOutlines?.(name), track),
+            chapterOutline: createTemplateListValue(resolvers.resolveInputChapterOutlines?.(name), track),
         }
     }
 
     return inputs
 }
 
-function buildTemplateContext(context: PromptTemplateRenderContext, inputs: Record<string, TemplateInputValue>, resolvers: PromptTemplateRenderResolvers) {
+function buildTemplateContext(context: PromptTemplateRenderContext, inputs: Record<string, TemplateInputValue>, resolvers: PromptTemplateRenderResolvers, track?: ContextTracker) {
+    const outline = (key: string, value: string | null | undefined) => !track || track(key, value ?? '') ? value : ''
     return {
         novel: {
             language: context.novelLanguage ?? '',
-            outline: createTemplateStringValue(context.novelOutlineStorySoFar, {
-                full: context.novelOutlineFull,
-                storysofar: context.novelOutlineStorySoFar,
+            outline: createTemplateStringValue(outline('novel:outline:storysofar', context.novelOutlineStorySoFar), {
+                full: outline('novel:outline:full', context.novelOutlineFull),
+                storysofar: outline('novel:outline:storysofar', context.novelOutlineStorySoFar),
             }),
         },
         scene: {
@@ -372,14 +401,14 @@ function buildTemplateContext(context: PromptTemplateRenderContext, inputs: Reco
         },
         instruction: {
             text: context.instructionText ?? '',
-            terms: createTemplateTermCollection(context.instructionTerms ?? [], resolvers),
+            terms: createTemplateTermCollection(context.instructionTerms ?? [], resolvers, track),
         },
         chat: {
             userInput: createTemplateStringValue(context.chatUserInput ?? '', {
-                terms: createTemplateTermCollection(context.chatUserInputTerms ?? [], resolvers),
+                terms: createTemplateTermCollection(context.chatUserInputTerms ?? [], resolvers, track),
             }),
             history: createTemplateStringValue(context.chatHistoryText ?? '', {
-                terms: createTemplateTermCollection(context.chatHistoryTerms ?? [], resolvers),
+                terms: createTemplateTermCollection(context.chatHistoryTerms ?? [], resolvers, track),
             }),
         },
         inputs,
@@ -480,7 +509,14 @@ export function renderPromptTemplateMessages(params: {
     if (texts.length === 0) return { texts: [], warnings: [] }
 
     const delimiter = createMessageDelimiter(texts)
-    const text = `${delimiter}${texts.join(delimiter)}${delimiter}`
+    const inputBoundary = options?.chat ? crypto.randomUUID() : ''
+    const inputStart = `__onw_chat_start_${inputBoundary}__`
+    const inputEnd = `__onw_chat_end_${inputBoundary}__`
+    const sourceTexts = options?.chat ? texts.map((source) => source.replace(/\{\{-?([\s\S]*?)-?\}\}/g, (tag: string, expression: string) => {
+        if (!countChatUserInputReferencesInText(tag)) return tag
+        return tag.replace(expression, ` __chat_input(${expression.trim()}) `)
+    })) : texts
+    const text = `${delimiter}${sourceTexts.join(delimiter)}${delimiter}`
     const maxDepth = options?.maxDepth ?? 5
     const inputNames = new Set<string>()
     const warnings: PromptTemplateRenderWarning[] = []
@@ -495,7 +531,14 @@ export function renderPromptTemplateMessages(params: {
         warnings,
     })
 
-    const templateContext = buildTemplateContext(context, buildInputsContext(inputNames, resolvers, warnings), resolvers)
+    const previous = new Map(options?.chat?.previousContextItems.map((item) => [item.key, item.value]))
+    const candidates = new Map<string, string>()
+    const track: ContextTracker | undefined = options?.chat ? (key, value) => {
+        if (!value.trim() || previous.get(key) === value) return false
+        candidates.set(key, value)
+        return true
+    } : undefined
+    const templateContext = buildTemplateContext(context, buildInputsContext(inputNames, resolvers, warnings, track), resolvers, track)
     const loader = createIncludeLoader({
         resolvers,
         maxDepth,
@@ -509,8 +552,13 @@ export function renderPromptTemplateMessages(params: {
         trimBlocks: false,
         lstripBlocks: false,
     })
-    environment.addFilter('union', (left: unknown, right: unknown) => unionTemplateTermCollections(left, right, resolvers))
+    environment.addFilter('union', (left: unknown, right: unknown) => unionTemplateTermCollections(left, right, resolvers, track))
+    environment.addGlobal('__chat_input', (value: unknown) => `${inputStart}${String(value ?? '')}${inputEnd}`)
     environment.addGlobal('roll', rollDice)
+    environment.addGlobal('termsfrom', (...values: unknown[]) => {
+        const text = expandTemplateContent(values).trim()
+        return createTemplateTermCollection(text ? resolvers.resolveTextTermIds?.(text) : [], resolvers, track)
+    })
 
     try {
         const rendered = environment.renderString(
@@ -526,7 +574,28 @@ export function renderPromptTemplateMessages(params: {
             })
             return { texts, warnings: dedupeWarnings(warnings) }
         }
-        return { texts: sections.slice(1, -1), warnings: dedupeWarnings(warnings) }
+        const output = sections.slice(1, -1)
+        if (!options?.chat) return { texts: output, warnings: dedupeWarnings(warnings) }
+        const chatState: PromptTemplateChatState = { userInput: null, contextItems: [] }
+        const contextSections: string[] = []
+        const cleanOutput = output.map((section) => {
+            const start = section.indexOf(inputStart)
+            const end = section.indexOf(inputEnd, start + inputStart.length)
+            if (start < 0 || end < 0) {
+                contextSections.push(section)
+                return section
+            }
+            const userInput = { before: section.slice(0, start), after: section.slice(end + inputEnd.length) }
+            chatState.userInput = userInput
+            contextSections.push(`${userInput.before}\n${userInput.after}`)
+            return `${userInput.before}${section.slice(start + inputStart.length, end)}${userInput.after}`
+        })
+        const contextOutput = contextSections.join('\n')
+        chatState.contextItems = [...candidates].filter(([, value]) => contextOutput.includes(value)).map(([key, value]) => ({ key, value }))
+        return {
+            texts: cleanOutput, warnings: dedupeWarnings(warnings),
+            ...(options?.chat ? { chatState } : {}),
+        }
     } catch (error) {
         warnings.push(toSyntaxWarning(error))
         return { texts, warnings: dedupeWarnings(warnings) }

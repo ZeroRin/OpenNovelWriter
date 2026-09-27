@@ -69,72 +69,73 @@ import LightIcon61 from './gpt-5-codex/light'
 import LightIcon62 from './gpt-5-mini/light'
 import LightIcon63 from './gpt-5-nano/light'
 import LightIcon64 from './gpt-5-pro/light'
-import LightIcon65 from './gpt-audio/light'
-import LightIcon66 from './gpt-audio-1-5/light'
-import LightIcon67 from './gpt-audio-mini/light'
-import LightIcon68 from './gpt-image-1/light'
-import LightIcon69 from './gpt-image-1-5/light'
-import LightIcon70 from './gpt-image-1-mini/light'
-import LightIcon71 from './gpt-image-2/light'
-import LightIcon72 from './gpt-oss-120b/light'
-import LightIcon73 from './gpt-oss-20b/light'
-import LightIcon74 from './gpt-realtime/light'
-import LightIcon75 from './gpt-realtime-1-5/light'
-import LightIcon76 from './gpt-realtime-2/light'
-import LightIcon77 from './gpt-realtime-2-1/light'
-import LightIcon78 from './gpt-realtime-2-1-mini/light'
-import LightIcon79 from './gpt-realtime-mini/light'
-import LightIcon80 from './gpt-realtime-translate/light'
-import LightIcon81 from './gpt-realtime-whisper/light'
-import LightIcon82 from './grok/light'
-import DarkIcon82 from './grok/dark'
-import LightIcon83 from './hailuo/light'
-import LightIcon84 from './happyhorse/light'
-import LightIcon85 from './hunyuan/light'
-import LightIcon86 from './ibm/light'
-import LightIcon87 from './ideogram/light'
-import DarkIcon87 from './ideogram/dark'
-import LightIcon88 from './inception/light'
-import DarkIcon88 from './inception/dark'
-import LightIcon89 from './internlm/light'
-import LightIcon90 from './jina/light'
-import DarkIcon90 from './jina/dark'
-import LightIcon91 from './kimi/light'
-import DarkIcon91 from './kimi/dark'
-import LightIcon92 from './kling/light'
-import LightIcon93 from './kolors/light'
-import LightIcon94 from './ling/light'
-import LightIcon95 from './longcat/light'
-import DarkIcon95 from './longcat/dark'
-import LightIcon96 from './meta/light'
-import LightIcon97 from './mimo/light'
-import DarkIcon97 from './mimo/dark'
-import LightIcon98 from './minimax/light'
-import LightIcon99 from './mistral/light'
-import LightIcon100 from './nanobanana/light'
-import LightIcon101 from './nousresearch/light'
-import DarkIcon101 from './nousresearch/dark'
-import LightIcon102 from './nova/light'
-import LightIcon103 from './nvidia/light'
-import LightIcon104 from './palm/light'
-import LightIcon105 from './perplexity/light'
-import LightIcon106 from './qwen/light'
-import LightIcon107 from './relace/light'
-import DarkIcon107 from './relace/dark'
-import LightIcon108 from './sensenova/light'
-import LightIcon109 from './sora/light'
-import LightIcon110 from './stability/light'
-import LightIcon111 from './stepfun/light'
-import LightIcon112 from './suno/light'
-import DarkIcon112 from './suno/dark'
-import LightIcon113 from './trinity/light'
-import DarkIcon113 from './trinity/dark'
-import LightIcon114 from './upstage/light'
-import LightIcon115 from './voyage/light'
-import DarkIcon115 from './voyage/dark'
-import LightIcon116 from './wenxin/light'
-import LightIcon117 from './yi/light'
-import DarkIcon117 from './yi/dark'
+import LightIcon65 from './gpt-6-astra/light'
+import LightIcon66 from './gpt-audio/light'
+import LightIcon67 from './gpt-audio-1-5/light'
+import LightIcon68 from './gpt-audio-mini/light'
+import LightIcon69 from './gpt-image-1/light'
+import LightIcon70 from './gpt-image-1-5/light'
+import LightIcon71 from './gpt-image-1-mini/light'
+import LightIcon72 from './gpt-image-2/light'
+import LightIcon73 from './gpt-oss-120b/light'
+import LightIcon74 from './gpt-oss-20b/light'
+import LightIcon75 from './gpt-realtime/light'
+import LightIcon76 from './gpt-realtime-1-5/light'
+import LightIcon77 from './gpt-realtime-2/light'
+import LightIcon78 from './gpt-realtime-2-1/light'
+import LightIcon79 from './gpt-realtime-2-1-mini/light'
+import LightIcon80 from './gpt-realtime-mini/light'
+import LightIcon81 from './gpt-realtime-translate/light'
+import LightIcon82 from './gpt-realtime-whisper/light'
+import LightIcon83 from './grok/light'
+import DarkIcon83 from './grok/dark'
+import LightIcon84 from './hailuo/light'
+import LightIcon85 from './happyhorse/light'
+import LightIcon86 from './hunyuan/light'
+import LightIcon87 from './ibm/light'
+import LightIcon88 from './ideogram/light'
+import DarkIcon88 from './ideogram/dark'
+import LightIcon89 from './inception/light'
+import DarkIcon89 from './inception/dark'
+import LightIcon90 from './internlm/light'
+import LightIcon91 from './jina/light'
+import DarkIcon91 from './jina/dark'
+import LightIcon92 from './kimi/light'
+import DarkIcon92 from './kimi/dark'
+import LightIcon93 from './kling/light'
+import LightIcon94 from './kolors/light'
+import LightIcon95 from './ling/light'
+import LightIcon96 from './longcat/light'
+import DarkIcon96 from './longcat/dark'
+import LightIcon97 from './meta/light'
+import LightIcon98 from './mimo/light'
+import DarkIcon98 from './mimo/dark'
+import LightIcon99 from './minimax/light'
+import LightIcon100 from './mistral/light'
+import LightIcon101 from './nanobanana/light'
+import LightIcon102 from './nousresearch/light'
+import DarkIcon102 from './nousresearch/dark'
+import LightIcon103 from './nova/light'
+import LightIcon104 from './nvidia/light'
+import LightIcon105 from './palm/light'
+import LightIcon106 from './perplexity/light'
+import LightIcon107 from './qwen/light'
+import LightIcon108 from './relace/light'
+import DarkIcon108 from './relace/dark'
+import LightIcon109 from './sensenova/light'
+import LightIcon110 from './sora/light'
+import LightIcon111 from './stability/light'
+import LightIcon112 from './stepfun/light'
+import LightIcon113 from './suno/light'
+import DarkIcon113 from './suno/dark'
+import LightIcon114 from './trinity/light'
+import DarkIcon114 from './trinity/dark'
+import LightIcon115 from './upstage/light'
+import LightIcon116 from './voyage/light'
+import DarkIcon116 from './voyage/dark'
+import LightIcon117 from './wenxin/light'
+import LightIcon118 from './yi/light'
+import DarkIcon118 from './yi/dark'
 
 export const MODEL_ICON_CATALOG: Record<string, ThemedIcon> = {
   "ai21": { light: LightIcon0, dark: DarkIcon0 },
@@ -202,57 +203,58 @@ export const MODEL_ICON_CATALOG: Record<string, ThemedIcon> = {
   "gpt-5-mini": { light: LightIcon62 },
   "gpt-5-nano": { light: LightIcon63 },
   "gpt-5-pro": { light: LightIcon64 },
-  "gpt-audio": { light: LightIcon65 },
-  "gpt-audio-1-5": { light: LightIcon66 },
-  "gpt-audio-mini": { light: LightIcon67 },
-  "gpt-image-1": { light: LightIcon68 },
-  "gpt-image-1-5": { light: LightIcon69 },
-  "gpt-image-1-mini": { light: LightIcon70 },
-  "gpt-image-2": { light: LightIcon71 },
-  "gpt-oss-120b": { light: LightIcon72 },
-  "gpt-oss-20b": { light: LightIcon73 },
-  "gpt-realtime": { light: LightIcon74 },
-  "gpt-realtime-1-5": { light: LightIcon75 },
-  "gpt-realtime-2": { light: LightIcon76 },
-  "gpt-realtime-2-1": { light: LightIcon77 },
-  "gpt-realtime-2-1-mini": { light: LightIcon78 },
-  "gpt-realtime-mini": { light: LightIcon79 },
-  "gpt-realtime-translate": { light: LightIcon80 },
-  "gpt-realtime-whisper": { light: LightIcon81 },
-  "grok": { light: LightIcon82, dark: DarkIcon82 },
-  "hailuo": { light: LightIcon83 },
-  "happyhorse": { light: LightIcon84 },
-  "hunyuan": { light: LightIcon85 },
-  "ibm": { light: LightIcon86 },
-  "ideogram": { light: LightIcon87, dark: DarkIcon87 },
-  "inception": { light: LightIcon88, dark: DarkIcon88 },
-  "internlm": { light: LightIcon89 },
-  "jina": { light: LightIcon90, dark: DarkIcon90 },
-  "kimi": { light: LightIcon91, dark: DarkIcon91 },
-  "kling": { light: LightIcon92 },
-  "kolors": { light: LightIcon93 },
-  "ling": { light: LightIcon94 },
-  "longcat": { light: LightIcon95, dark: DarkIcon95 },
-  "meta": { light: LightIcon96 },
-  "mimo": { light: LightIcon97, dark: DarkIcon97 },
-  "minimax": { light: LightIcon98 },
-  "mistral": { light: LightIcon99 },
-  "nanobanana": { light: LightIcon100 },
-  "nousresearch": { light: LightIcon101, dark: DarkIcon101 },
-  "nova": { light: LightIcon102 },
-  "nvidia": { light: LightIcon103 },
-  "palm": { light: LightIcon104 },
-  "perplexity": { light: LightIcon105 },
-  "qwen": { light: LightIcon106 },
-  "relace": { light: LightIcon107, dark: DarkIcon107 },
-  "sensenova": { light: LightIcon108 },
-  "sora": { light: LightIcon109 },
-  "stability": { light: LightIcon110 },
-  "stepfun": { light: LightIcon111 },
-  "suno": { light: LightIcon112, dark: DarkIcon112 },
-  "trinity": { light: LightIcon113, dark: DarkIcon113 },
-  "upstage": { light: LightIcon114 },
-  "voyage": { light: LightIcon115, dark: DarkIcon115 },
-  "wenxin": { light: LightIcon116 },
-  "yi": { light: LightIcon117, dark: DarkIcon117 },
+  "gpt-6-astra": { light: LightIcon65 },
+  "gpt-audio": { light: LightIcon66 },
+  "gpt-audio-1-5": { light: LightIcon67 },
+  "gpt-audio-mini": { light: LightIcon68 },
+  "gpt-image-1": { light: LightIcon69 },
+  "gpt-image-1-5": { light: LightIcon70 },
+  "gpt-image-1-mini": { light: LightIcon71 },
+  "gpt-image-2": { light: LightIcon72 },
+  "gpt-oss-120b": { light: LightIcon73 },
+  "gpt-oss-20b": { light: LightIcon74 },
+  "gpt-realtime": { light: LightIcon75 },
+  "gpt-realtime-1-5": { light: LightIcon76 },
+  "gpt-realtime-2": { light: LightIcon77 },
+  "gpt-realtime-2-1": { light: LightIcon78 },
+  "gpt-realtime-2-1-mini": { light: LightIcon79 },
+  "gpt-realtime-mini": { light: LightIcon80 },
+  "gpt-realtime-translate": { light: LightIcon81 },
+  "gpt-realtime-whisper": { light: LightIcon82 },
+  "grok": { light: LightIcon83, dark: DarkIcon83 },
+  "hailuo": { light: LightIcon84 },
+  "happyhorse": { light: LightIcon85 },
+  "hunyuan": { light: LightIcon86 },
+  "ibm": { light: LightIcon87 },
+  "ideogram": { light: LightIcon88, dark: DarkIcon88 },
+  "inception": { light: LightIcon89, dark: DarkIcon89 },
+  "internlm": { light: LightIcon90 },
+  "jina": { light: LightIcon91, dark: DarkIcon91 },
+  "kimi": { light: LightIcon92, dark: DarkIcon92 },
+  "kling": { light: LightIcon93 },
+  "kolors": { light: LightIcon94 },
+  "ling": { light: LightIcon95 },
+  "longcat": { light: LightIcon96, dark: DarkIcon96 },
+  "meta": { light: LightIcon97 },
+  "mimo": { light: LightIcon98, dark: DarkIcon98 },
+  "minimax": { light: LightIcon99 },
+  "mistral": { light: LightIcon100 },
+  "nanobanana": { light: LightIcon101 },
+  "nousresearch": { light: LightIcon102, dark: DarkIcon102 },
+  "nova": { light: LightIcon103 },
+  "nvidia": { light: LightIcon104 },
+  "palm": { light: LightIcon105 },
+  "perplexity": { light: LightIcon106 },
+  "qwen": { light: LightIcon107 },
+  "relace": { light: LightIcon108, dark: DarkIcon108 },
+  "sensenova": { light: LightIcon109 },
+  "sora": { light: LightIcon110 },
+  "stability": { light: LightIcon111 },
+  "stepfun": { light: LightIcon112 },
+  "suno": { light: LightIcon113, dark: DarkIcon113 },
+  "trinity": { light: LightIcon114, dark: DarkIcon114 },
+  "upstage": { light: LightIcon115 },
+  "voyage": { light: LightIcon116, dark: DarkIcon116 },
+  "wenxin": { light: LightIcon117 },
+  "yi": { light: LightIcon118, dark: DarkIcon118 },
 }

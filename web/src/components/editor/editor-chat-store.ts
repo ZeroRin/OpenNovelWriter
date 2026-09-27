@@ -1,7 +1,11 @@
 'use client'
 
+import type { ChatPromptSnapshot } from '@/lib/ai-chat-messages'
+import type { PromptTemplateChatState } from '@/lib/prompt-template-render'
+
+import { editChatUserMessage } from '@/lib/ai-chat-messages'
 import { create } from 'zustand'
-import { editorChatApi, type EditorChatConversation as ApiEditorChatConversation, type Prompt } from '@/lib/api'
+import { editorChatApi, type EditorChatConversation as ApiEditorChatConversation } from '@/lib/api'
 
 export const EDITOR_CHAT_FALLBACK_NOVEL_ID = '__default__'
 
@@ -11,6 +15,7 @@ export type EditorChatMessage = {
     content: string
     sentContent: string | null
     fullRenderedContent: string | null
+    renderState: PromptTemplateChatState | null
     promptTokens: number | null
     completionTokens: number | null
     totalTokens: number | null
@@ -26,7 +31,7 @@ export type EditorChatConversation = {
     promptId: string | null
     selectedGroupId: string | null
     draftContent: string
-    promptSnapshot: Prompt | null
+    promptSnapshot: ChatPromptSnapshot | null
     inputState: unknown
     createdAt: string
     updatedAt: string
@@ -52,7 +57,7 @@ type EditorChatState = {
         options?: {
             promptId?: string | null
             selectedGroupId?: string | null
-            promptSnapshot?: Prompt | null
+            promptSnapshot?: ChatPromptSnapshot | null
             inputState?: unknown
         }
     ) => Promise<string>
@@ -93,6 +98,7 @@ type EditorChatState = {
             attachments?: string[]
             sentContent?: string | null
             fullRenderedContent?: string | null
+            renderState?: PromptTemplateChatState | null
             promptTokens?: number | null
             completionTokens?: number | null
             totalTokens?: number | null
@@ -180,6 +186,7 @@ function toStoreConversation(conversation: ApiEditorChatConversation): EditorCha
             content: message.content,
             sentContent: message.sentContent,
             fullRenderedContent: message.fullRenderedContent,
+            renderState: message.renderState,
             promptTokens: message.promptTokens,
             completionTokens: message.completionTokens,
             totalTokens: message.totalTokens,
@@ -518,7 +525,7 @@ export const useEditorChatStore = create<EditorChatState>()((set, get) => ({
             if (!currentConversation) return state
 
             const nextMessages = currentConversation.messages.map((message) =>
-                message.id === messageId ? { ...message, content } : message
+                message.id === messageId ? { ...message, ...editChatUserMessage(message, content) } : message
             )
             const updatedConversation: EditorChatConversation = {
                 ...currentConversation,
@@ -604,6 +611,7 @@ export const useEditorChatStore = create<EditorChatState>()((set, get) => ({
             content: message.content,
             sentContent: message.sentContent ?? null,
             fullRenderedContent: message.fullRenderedContent ?? null,
+            renderState: message.renderState ?? null,
             promptTokens: message.promptTokens ?? null,
             completionTokens: message.completionTokens ?? null,
             totalTokens: message.totalTokens ?? null,
@@ -647,6 +655,7 @@ export const useEditorChatStore = create<EditorChatState>()((set, get) => ({
             content: message.content,
             sentContent: message.sentContent ?? null,
             fullRenderedContent: message.fullRenderedContent ?? null,
+            renderState: message.renderState ?? null,
             promptTokens: message.promptTokens ?? null,
             completionTokens: message.completionTokens ?? null,
             totalTokens: message.totalTokens ?? null,

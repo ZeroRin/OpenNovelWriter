@@ -3,7 +3,8 @@
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { X } from 'lucide-react'
-import { getChapterDisplayLabel, getSnippetDisplayTitle, selectionKey } from '@/components/editor/prompt-inputs-editor/utils'
+import { getChapterDisplayLabel, getSnippetDisplayTitle } from '@/components/editor/prompt-inputs-editor/utils'
+import { selectionKey } from '@/lib/prompt-inputs'
 import { getTermEntryColorClasses, getTermEntryColorId } from '@/components/editor/terms/term-entry-colors'
 import type { PreviewContentSelectionSectionProps } from '@/components/editor/prompt-inputs-editor/preview-content-selection-shared'
 

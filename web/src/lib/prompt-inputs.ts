@@ -14,6 +14,31 @@ export type ContentSelectionTarget =
     | { kind: 'label'; labelId: string }
     | { kind: 'term_tag'; tag: string }
 
+export function selectionKey(target: ContentSelectionTarget) {
+    switch (target.kind) {
+        case 'full_novel':
+            return 'full_novel'
+        case 'act':
+            return `act:${target.actNumber}`
+        case 'chapter':
+            return `chapter:${target.chapterId}`
+        case 'act_outline':
+            return `act_outline:${target.actNumber}`
+        case 'chapter_outline':
+            return `chapter_outline:${target.chapterId}`
+        case 'scene':
+            return `scene:${target.sceneId}`
+        case 'snippet':
+            return `snippet:${target.snippetId}`
+        case 'term':
+            return `term:${target.termId}`
+        case 'label':
+            return `label:${target.labelId}`
+        case 'term_tag':
+            return `term_tag:${target.tag}`
+    }
+}
+
 export interface PromptDropdownOption {
     id: string
     label: string
@@ -162,13 +187,13 @@ export function createPromptContentSelectionInput(): PromptContentSelectionInput
                         others: true,
                     },
                 },
-                label: { enabled: false, actTreatAs: 'summary', sceneTreatAs: 'full_text' },
+                label: { enabled: true, actTreatAs: 'summary', sceneTreatAs: 'full_text' },
                 outline: {
-                    enabled: false,
+                    enabled: true,
                     act: { enabled: true, treatAs: 'summary' },
                     chapter: { enabled: true, treatAs: 'full_text' },
                 },
-                termTag: { enabled: false },
+                termTag: { enabled: true },
             },
         },
     }
@@ -207,6 +232,25 @@ function asTrimmedString(value: unknown): string | null {
 
 function normalizePromptInputName(name: string) {
     return name.trim().toLocaleLowerCase()
+}
+
+export function indexPromptInputs(inputs: PromptInputDefinition[]): Map<string, PromptInputDefinition> {
+    const byName = new Map<string, PromptInputDefinition>()
+    for (const input of inputs) {
+        const key = input.name.trim().toLowerCase()
+        if (key && !byName.has(key)) byName.set(key, input)
+    }
+    return byName
+}
+
+export function deduplicateContentSelections(selections: ContentSelectionTarget[]): ContentSelectionTarget[] {
+    const seen = new Set<string>()
+    return selections.filter((selection) => {
+        const key = selectionKey(selection)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+    })
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -289,6 +333,16 @@ export function normalizePromptInputValue(input: PromptInputDefinition, value: u
     const text = typeof record.text === 'string' ? record.text : ''
 
     return { kind: 'custom', dropdownOptionIds, text }
+}
+
+export function renderPromptCustomInputValue(
+    input: PromptCustomInputDefinition,
+    value: { dropdownOptionIds: string[]; text: string } = input.custom.defaultContent
+): string {
+    const ids = input.custom.dropdown.allowMultiple ? value.dropdownOptionIds : value.dropdownOptionIds.slice(0, 1)
+    const parts = ids.map((id) => input.custom.dropdown.options.find((option) => option.id === id))
+        .map((option) => option?.content?.trim() || option?.label.trim() || '')
+    return [...parts, value.text.trim()].filter(Boolean).join('\n\n').trim()
 }
 
 export function isPromptInputValueFilled(input: PromptInputDefinition, value: unknown = undefined) {

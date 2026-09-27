@@ -16,10 +16,6 @@ import {
 } from '@/lib/server/codex-session'
 import { deleteCodexSession } from '@/lib/server/codex-session-deletion'
 import { updateActiveCodexServiceTier } from '@/lib/server/codex-app-server'
-import {
-    rawDeleteContinuationDraft,
-    stripContinuationPanelMarker,
-} from '@/lib/server/continuation-draft'
 
 interface RouteContext {
     params: Promise<unknown>
@@ -174,21 +170,8 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
         })
         if (!existing) return NextResponse.json({ detail: 'Codex session not found' }, { status: 404 })
 
-        // A scene-continuation session is paired with an inline panel (one continuation draft
-        // linked by codexSessionId). Deleting the session removes that entry point too: strip the
-        // panel marker from the scene HTML (covers the editor-closed case) and delete the draft.
-        // `removedPanelId` is returned so an open editor can drop the live node via a client event.
-        const linkedDraft = await prisma.sceneContinuationDraft.findFirst({
-            where: { codexSessionId: id },
-            select: { panelId: true, sceneId: true },
-        })
         await deleteCodexSession(user.userId, id)
-        if (linkedDraft) {
-            await stripContinuationPanelMarker(linkedDraft.sceneId, linkedDraft.panelId)
-            await rawDeleteContinuationDraft(linkedDraft.panelId)
-        }
-
-        return NextResponse.json({ ok: true, removedPanelId: linkedDraft?.panelId ?? null })
+        return NextResponse.json({ ok: true })
     } catch (error) {
         console.error('Delete Codex session error:', error)
         return NextResponse.json({ detail: 'Internal server error' }, { status: 500 })
