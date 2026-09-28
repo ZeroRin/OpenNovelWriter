@@ -19,7 +19,7 @@ import { mergeCompletedAssistantText } from '@/lib/server/codex-assistant-text'
 import { CodexReasoningStream, type CodexReasoningDelta } from '@/lib/server/codex-reasoning-stream'
 import { syncCodexConnectionRuntimeFiles } from '@/lib/server/codex-runtime-config'
 import { getCodexOpenCodeGoConfig } from '@/lib/server/opencode-go'
-import { codexConfigOverrideArgs, windowsCommandLine } from '@/lib/server/codex-config-overrides'
+import { codexConfigOverrideArgs, resolveCodexLaunch, windowsCommandLine } from '@/lib/server/codex-config-overrides'
 import { getCodexSessionSkillConfig, rewriteCodexSkillReferences, type CodexSkillReference } from '@/lib/server/codex-session-skills'
 import { prepareCodexQuestionPolicy } from '@/lib/server/codex-question-policy'
 import type { CodexUserInputRequest } from '@/lib/codex-user-input'
@@ -476,26 +476,23 @@ class CodexAppServerClient {
         onCreated?: (client: CodexAppServerClient) => void,
         configOverrides: Record<string, unknown> = {}
     ) {
-        const args = codexConfigOverrideArgs(configOverrides)
-        const command = ['codex', ...args, 'app-server']
-        // On Windows `codex` is installed as a `.cmd`/`.ps1` shim that Node's direct spawn cannot
-        // resolve (spawn codex ENOENT). Routing through the shell lets it resolve the command the
-        // same way an interactive prompt does, but a shell makes Node concatenate the argument array
-        // without escaping it, so the command line is quoted here instead. macOS/Linux keep the
-        // direct exec.
-        const useShell = globalThis.process.platform === 'win32'
-        const child = spawn(
-            useShell ? windowsCommandLine(command) : command[0],
-            useShell ? [] : command.slice(1),
-            {
-                env: {
-                    ...globalThis.process.env,
-                    CODEX_HOME: codexHome,
-                },
-                stdio: ['pipe', 'pipe', 'pipe'],
-                shell: useShell,
-            }
-        )
+        const launch = resolveCodexLaunch()
+        const args = [...codexConfigOverrideArgs(configOverrides), 'app-server']
+        // A shell-less launch hands the argument array over untouched, which is what `-c` values need:
+        // they are TOML and hold spaces, quotes and arbitrary path characters. Only the fallback that
+        // cannot avoid a shell has to quote its command line, because Node concatenates the array
+        // unescaped there (DEP0190) and cmd.exe would otherwise re-split it.
+        const child = launch.shell
+            ? spawn(windowsCommandLine([launch.command, ...launch.args, ...args]), [], {
+                  env: { ...globalThis.process.env, CODEX_HOME: codexHome },
+                  stdio: ['pipe', 'pipe', 'pipe'],
+                  shell: true,
+              })
+            : spawn(launch.command, [...launch.args, ...args], {
+                  env: { ...globalThis.process.env, CODEX_HOME: codexHome },
+                  stdio: ['pipe', 'pipe', 'pipe'],
+                  shell: false,
+              })
 
         const client = new CodexAppServerClient(child)
         onCreated?.(client)
