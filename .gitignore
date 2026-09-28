@@ -75,6 +75,7 @@ logs/
 # CLI
 .codex
 .claude/
+.dsh/
 
 # working plans
 WorkingPlan/*
