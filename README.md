@@ -97,6 +97,11 @@ SITE_BASIC_AUTH_ENABLED=false
 SITE_BASIC_AUTH_USERNAME=
 SITE_BASIC_AUTH_PASSWORD=
 OPENNOVELWRITER_DATA_DIR=
+
+# 可选。配置后 Codex 会话可用 web_search（Tavily，每月 1000 次免费额度）。
+# 当会话本身使用官方 DeepSeek Responses 连接时，改用 DeepSeek 原生搜索，此项可留空。
+# 未配置时 web_search 会提示未配置，web_fetch 仍可正常使用。
+TAVILY_API_KEY=
 ```
 
 初始化数据库：
@@ -235,6 +240,12 @@ SITE_BASIC_AUTH_ENABLED=false
 SITE_BASIC_AUTH_USERNAME=
 SITE_BASIC_AUTH_PASSWORD=
 OPENNOVELWRITER_DATA_DIR=
+
+# Optional. Enables the Codex web_search tool (Tavily, 1000 free credits per month). When the
+# session itself runs on an official DeepSeek Responses connection, DeepSeek native search is used
+# instead and this can stay empty. Without either, web_search reports that it is unconfigured and
+# web_fetch still works.
+TAVILY_API_KEY=
 ```
 
 Initialize the database:
